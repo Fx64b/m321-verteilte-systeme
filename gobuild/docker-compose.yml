@@ -38,6 +38,21 @@ services:
       timeout: 5s
       retries: 5
 
+
+  kafka-init:
+    build:
+      context: ./kafka-init
+      dockerfile: Dockerfile
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "kafka-topics --list --bootstrap-server kafka:29092 | grep -q 'build-requests'" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   # Redis for caching
   redis:
     image: redis:alpine
@@ -67,6 +82,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   build-orchestrator:
     build:
@@ -83,6 +100,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   builder:
     build:
@@ -95,6 +114,8 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
     deploy:
       replicas: 2
     volumes:
@@ -116,6 +137,8 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   notification:
     build:
@@ -130,6 +153,8 @@ services:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   status-dashboard-api:
     build:
@@ -146,6 +171,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   # Frontend
   status-dashboard-ui:

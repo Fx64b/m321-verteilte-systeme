@@ -22,6 +22,12 @@ type BuildStatus = {
   logs?: string[];
 };
 
+type User = {
+  id: string;
+  email: string;
+  role: string;
+};
+
 export default function Dashboard() {
   const [builds, setBuilds] = useState<BuildStatus[]>([]);
   const [selectedBuild, setSelectedBuild] = useState<BuildStatus | null>(null);
@@ -30,25 +36,53 @@ export default function Dashboard() {
   const [branch, setBranch] = useState("");
   const [socket, setSocket] = useState<WebSocket | null>(null);
 
+  // Authentication state
+  const [user, setUser] = useState<User | null>(null);
+  const [showLoginForm, setShowLoginForm] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authError, setAuthError] = useState("");
+
+  // Check if user is already logged in
+  useEffect(() => {
+    const storedUser = localStorage.getItem("user");
+    if (storedUser) {
+      try {
+        setUser(JSON.parse(storedUser));
+      } catch (e) {
+        console.error("Failed to parse stored user:", e);
+        localStorage.removeItem("user");
+      }
+    }
+  }, []);
+
   // Fetch builds on component mount
   useEffect(() => {
-    const fetchBuilds = async () => {
-      try {
-        const response = await fetch("http://localhost:8085/api/builds");
-        if (!response.ok) {
-          throw new Error("Failed to fetch builds");
-        }
-        const data = await response.json();
-        setBuilds(data);
-      } catch (error) {
-        console.error("Error fetching builds:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchBuilds();
   }, []);
+
+  const fetchBuilds = async () => {
+    try {
+      const token = localStorage.getItem("authToken");
+      const response = await fetch("http://localhost:8085/api/builds", {
+        headers: token ? {
+          "Authorization": `Bearer ${token}`
+        } : {}
+      });
+      if (!response.ok) {
+        throw new Error("Failed to fetch builds");
+      }
+      const data = await response.json();
+      setBuilds(data);
+    } catch (error) {
+      console.error("Error fetching builds:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Set up WebSocket connection
   useEffect(() => {
@@ -153,7 +187,12 @@ export default function Dashboard() {
   // Handle build selection
   const handleBuildSelect = async (build: BuildStatus) => {
     try {
-      const response = await fetch(`http://localhost:8085/api/builds/${build.id}`);
+      const token = localStorage.getItem("authToken");
+      const response = await fetch(`http://localhost:8085/api/builds/${build.id}`, {
+        headers: token ? {
+          "Authorization": `Bearer ${token}`
+        } : {}
+      });
       if (!response.ok) {
         throw new Error("Failed to fetch build details");
       }
@@ -169,12 +208,17 @@ export default function Dashboard() {
     if (!repositoryUrl) return;
 
     try {
+      const token = localStorage.getItem("authToken");
+      if (!token) {
+        setShowLoginForm(true);
+        return;
+      }
+
       const response = await fetch("http://localhost:8080/api/builds", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          // In a real app, you would include authentication
-          "Authorization": "Bearer mocktokenfornow"
+          "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify({
           repository_url: repositoryUrl,
@@ -194,11 +238,7 @@ export default function Dashboard() {
       setBranch("");
 
       // Refresh builds
-      const buildsResponse = await fetch("http://localhost:8085/api/builds");
-      if (buildsResponse.ok) {
-        const buildsData = await buildsResponse.json();
-        setBuilds(buildsData);
-      }
+      fetchBuilds();
     } catch (error) {
       console.error("Error submitting build:", error);
     }
@@ -220,8 +260,196 @@ export default function Dashboard() {
     }
   };
 
+  // Login function
+  const handleLogin = async () => {
+    try {
+      setAuthError("");
+      const response = await fetch("http://localhost:8080/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error || "Login failed");
+      }
+
+      const data = await response.json();
+      localStorage.setItem("authToken", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setUser(data.user);
+      setShowLoginForm(false);
+      setLoginEmail("");
+      setLoginPassword("");
+
+      // Refresh builds after login
+      fetchBuilds();
+    } catch (error: any) {
+      console.error("Login error:", error);
+      setAuthError(error.message);
+    }
+  };
+
+  // Register function
+  const handleRegister = async () => {
+    try {
+      setAuthError("");
+      const response = await fetch("http://localhost:8080/api/register", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          email: registerEmail,
+          password: registerPassword
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(error || "Registration failed");
+      }
+
+      const data = await response.json();
+      localStorage.setItem("authToken", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      setUser(data.user);
+      setShowLoginForm(false);
+      setRegisterEmail("");
+      setRegisterPassword("");
+
+      // Refresh builds after registration
+      fetchBuilds();
+    } catch (error: any) {
+      console.error("Registration error:", error);
+      setAuthError(error.message);
+    }
+  };
+
+  // Logout function
+  const handleLogout = () => {
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("user");
+    setUser(null);
+  };
+
   return (
-      <div className="container mx-auto py-10">
+      <div className="container mx-auto py-10 relative">
+        {/* Show login/register form if not authenticated */}
+        {showLoginForm && !user && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <Card className="w-full max-w-md mx-auto">
+                <CardHeader>
+                  <CardTitle>
+                    {isRegistering ? "Create an Account" : "Sign In"}
+                  </CardTitle>
+                  <CardDescription>
+                    {isRegistering
+                        ? "Register to create and track builds"
+                        : "Sign in to your account to continue"}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {authError && (
+                      <Alert variant="destructive" className="mb-4">
+                        <AlertDescription>{authError}</AlertDescription>
+                      </Alert>
+                  )}
+
+                  {isRegistering ? (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="register-email">Email</Label>
+                          <Input
+                              id="register-email"
+                              type="email"
+                              value={registerEmail}
+                              onChange={(e) => setRegisterEmail(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="register-password">Password</Label>
+                          <Input
+                              id="register-password"
+                              type="password"
+                              value={registerPassword}
+                              onChange={(e) => setRegisterPassword(e.target.value)}
+                          />
+                        </div>
+                        <div className="flex justify-between">
+                          <Button onClick={handleRegister} disabled={!registerEmail || !registerPassword}>
+                            Register
+                          </Button>
+                          <Button variant="outline" onClick={() => setIsRegistering(false)}>
+                            Already have an account?
+                          </Button>
+                        </div>
+                      </div>
+                  ) : (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="login-email">Email</Label>
+                          <Input
+                              id="login-email"
+                              type="email"
+                              value={loginEmail}
+                              onChange={(e) => setLoginEmail(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="login-password">Password</Label>
+                          <Input
+                              id="login-password"
+                              type="password"
+                              value={loginPassword}
+                              onChange={(e) => setLoginPassword(e.target.value)}
+                          />
+                        </div>
+                        <div className="flex justify-between">
+                          <Button onClick={handleLogin} disabled={!loginEmail || !loginPassword}>
+                            Login
+                          </Button>
+                          <Button variant="outline" onClick={() => setIsRegistering(true)}>
+                            Need an account?
+                          </Button>
+                        </div>
+                        <Button variant="ghost" className="w-full" onClick={() => setShowLoginForm(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+        )}
+
+        {/* User profile badge or login button */}
+        <div className="absolute top-4 right-4">
+          {user ? (
+              <div className="flex items-center gap-2">
+                <div className="bg-primary text-white rounded-full w-10 h-10 flex items-center justify-center">
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+                <div className="text-sm">
+                  <div className="font-medium">{user.email}</div>
+                  <Button variant="link" className="p-0 h-auto" onClick={handleLogout}>
+                    Sign out
+                  </Button>
+                </div>
+              </div>
+          ) : (
+              <Button onClick={() => setShowLoginForm(true)}>
+                Sign In
+              </Button>
+          )}
+        </div>
+
         <h1 className="text-3xl font-bold mb-8">GoBuild Status Dashboard</h1>
 
         <Tabs defaultValue="builds">
@@ -306,64 +534,74 @@ export default function Dashboard() {
                         {selectedBuild.artifact_url && (
                             <div className="mt-4">
                               <Button asChild>
-                                <a
-                                    href={`http://localhost:8083${selectedBuild.artifact_url}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+<a
+                                href={`http://localhost:8083${selectedBuild.artifact_url}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
                                 >
-                                  Download Artifact
-                                </a>
-                              </Button>
-                            </div>
-                        )}
+                                Download Artifact
+                              </a>
+                            </Button>
+                          </div>
+                          )}
                       </CardContent>
                     </Card>
-                ) : (
-                    <Alert>
-                      <AlertTitle>No build selected</AlertTitle>
-                      <AlertDescription>
-                        Select a build from the list to view details.
-                      </AlertDescription>
-                    </Alert>
-                )}
+                  ) : (
+                  <Alert>
+                  <AlertTitle>No build selected</AlertTitle>
+                  <AlertDescription>
+                  Select a build from the list to view details.
+                  </AlertDescription>
+                  </Alert>
+                  )}
               </div>
             </div>
           </TabsContent>
 
           <TabsContent value="new">
-            <Card>
-              <CardHeader>
-                <CardTitle>Submit New Build</CardTitle>
-                <CardDescription>
-                  Enter repository details to start a new build.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="repository">Repository URL</Label>
-                    <Input
-                        id="repository"
-                        placeholder="https://github.com/username/repo"
-                        value={repositoryUrl}
-                        onChange={(e) => setRepositoryUrl(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="branch">Branch (optional)</Label>
-                    <Input
-                        id="branch"
-                        placeholder="main"
-                        value={branch}
-                        onChange={(e) => setBranch(e.target.value)}
-                    />
-                  </div>
-                  <Button onClick={handleSubmitBuild} disabled={!repositoryUrl}>
-                    Submit Build
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+            {!user ? (
+                <Alert>
+                  <AlertTitle>Authentication Required</AlertTitle>
+                  <AlertDescription>
+                    Please sign in to submit a new build.
+                    <Button className="ml-4" onClick={() => setShowLoginForm(true)}>Sign In</Button>
+                  </AlertDescription>
+                </Alert>
+            ) : (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Submit New Build</CardTitle>
+                    <CardDescription>
+                      Enter repository details to start a new build.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="repository">Repository URL</Label>
+                        <Input
+                            id="repository"
+                            placeholder="https://github.com/username/repo"
+                            value={repositoryUrl}
+                            onChange={(e) => setRepositoryUrl(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="branch">Branch (optional)</Label>
+                        <Input
+                            id="branch"
+                            placeholder="main"
+                            value={branch}
+                            onChange={(e) => setBranch(e.target.value)}
+                        />
+                      </div>
+                      <Button onClick={handleSubmitBuild} disabled={!repositoryUrl}>
+                        Submit Build
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+            )}
           </TabsContent>
         </Tabs>
       </div>

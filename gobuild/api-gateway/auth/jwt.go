@@ -3,15 +3,27 @@ package auth
 import (
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var (
-	jwtSecretKey = []byte("your-secret-key")
+	jwtSecretKey = []byte(getEnv("JWT_SECRET", "your-secret-key-change-in-production"))
+
+	ErrInvalidToken = errors.New("invalid token")
 )
+
+func getEnv(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
 
 type UserClaims struct {
 	ID    string `json:"id"`
@@ -21,13 +33,20 @@ type UserClaims struct {
 }
 
 func GenerateToken(userID, email, role string) (string, error) {
+	// Token expires in 24 hours
+	expirationTime := time.Now().Add(24 * time.Hour)
+
 	claims := UserClaims{
 		ID:    userID,
 		Email: email,
 		Role:  role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+			Issuer:    "gobuild-api",
+			Subject:   userID,
+			ID:        uuid.New().String(),
 		},
 	}
 
@@ -42,6 +61,10 @@ func GenerateToken(userID, email, role string) (string, error) {
 
 func ValidateToken(tokenString string) (*UserClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Validate the signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
 		return jwtSecretKey, nil
 	})
 
@@ -53,15 +76,17 @@ func ValidateToken(tokenString string) (*UserClaims, error) {
 		return claims, nil
 	}
 
-	return nil, errors.New("invalid token")
+	return nil, ErrInvalidToken
 }
 
 // AuthMiddleware validates JWT tokens
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip auth for login and health check endpoints
-
-		if r.Method == "OPTIONS" || r.URL.Path == "/api/login" || r.URL.Path == "/health" {
+		// Skip auth for OPTIONS, login, register, and health check endpoints
+		if r.Method == "OPTIONS" ||
+			r.URL.Path == "/api/login" ||
+			r.URL.Path == "/api/register" ||
+			r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
 			return
 		}

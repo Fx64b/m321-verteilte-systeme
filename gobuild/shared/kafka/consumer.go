@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
@@ -31,7 +32,28 @@ func NewConsumer(bootstrapServers, groupID string) (*Consumer, error) {
 }
 
 func (c *Consumer) Subscribe(topics []string) error {
-	return c.consumer.SubscribeTopics(topics, nil)
+	maxRetries := 15
+	retryDelay := time.Second * 2
+
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = c.consumer.SubscribeTopics(topics, nil)
+		if err == nil {
+			log.Printf("Successfully subscribed to topics: %v", topics)
+			return nil
+		}
+
+		// Check if it's the "unknown topic" error and retry
+		if i < maxRetries-1 {
+			log.Printf("Failed to subscribe to topics: %v, retrying in %v... (attempt %d/%d)",
+				err, retryDelay, i+1, maxRetries)
+			time.Sleep(retryDelay)
+			// Increase retry delay for next attempt (exponential backoff)
+			retryDelay = time.Duration(float64(retryDelay) * 1.5)
+		}
+	}
+
+	return err
 }
 
 func (c *Consumer) ConsumeMessages(handler MessageHandler) {
@@ -57,8 +79,14 @@ func (c *Consumer) ConsumeMessages(handler MessageHandler) {
 					log.Printf("Error processing message: %v\n", err)
 				}
 			case kafka.Error:
-				log.Printf("Error: %v\n", e)
-				if e.Code() == kafka.ErrAllBrokersDown {
+				// Don't stop on topic subscription errors, as they may be resolved later
+				isTopicError := e.Code() == kafka.ErrUnknownTopicOrPart ||
+					e.Code() == kafka.ErrBadMsg ||
+					e.Code() == kafka.ErrTimedOut
+				if isTopicError {
+					log.Printf("Kafka error: %v\n", e)
+				} else if e.Code() == kafka.ErrAllBrokersDown {
+					log.Printf("Fatal Kafka error: %v\n", e)
 					run = false
 				}
 			}
