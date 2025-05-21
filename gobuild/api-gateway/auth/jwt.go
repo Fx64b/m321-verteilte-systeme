@@ -60,7 +60,8 @@ func ValidateToken(tokenString string) (*UserClaims, error) {
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip auth for login and health check endpoints
-		if r.URL.Path == "/api/login" || r.URL.Path == "/health" {
+
+		if r.Method == "OPTIONS" || r.URL.Path == "/api/login" || r.URL.Path == "/health" {
 			next.ServeHTTP(w, r)
 			return
 		}
