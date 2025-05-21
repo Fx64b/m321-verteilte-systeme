@@ -1,12 +1,13 @@
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go mod init notification && \
-    go mod tidy && \
-    go build -o notification .
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/notification
+COPY notification/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o notification .
 
-FROM alpine:latest
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/notification .
+COPY --from=builder /app/notification/notification .
 EXPOSE 8084
 CMD ["./notification"]

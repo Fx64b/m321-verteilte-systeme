@@ -1,4 +1,11 @@
 services:
+  # Dependencies
+  dependencies:
+    build:
+      context: .
+      dockerfile: dependencies.Dockerfile
+    image: gobuild-dependencies:latest
+
   # Kafka for messaging
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
@@ -24,6 +31,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "9092"]
       interval: 5s
@@ -35,6 +43,8 @@ services:
     image: redis:alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -43,69 +53,98 @@ services:
 
   # Backend services
   api-gateway:
-    build: ./api-gateway
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
     ports:
       - "8080:8080"
     environment:
       - PORT=8080
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       redis:
         condition: service_healthy
 
   build-orchestrator:
-    build: ./build-orchestrator
+    build:
+      context: .
+      dockerfile: build-orchestrator/Dockerfile
     ports:
       - "8081:8081"
     environment:
       - PORT=8081
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
       redis:
         condition: service_healthy
 
   builder:
-    build: ./builder
+    build:
+      context: .
+      dockerfile: builder/Dockerfile
     environment:
       - PORT=8082
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
     deploy:
-      replicas: 2  # Run multiple builder instances for concurrency
+      replicas: 2
+    volumes:
+      - build-artifacts:/app/artifacts
+      - build-work:/app/work
 
   storage:
-    build: ./storage
+    build:
+      context: .
+      dockerfile: storage/Dockerfile
     ports:
       - "8083:8083"
     environment:
       - PORT=8083
     volumes:
-      - build-artifacts:/app/artifacts  # Persistent volume for build artifacts
+      - build-artifacts:/app/artifacts
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
 
   notification:
-    build: ./notification
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
     ports:
       - "8084:8084"
     environment:
       - PORT=8084
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
         condition: service_healthy
 
   status-dashboard-api:
-    build: ./status-dashboard-api
+    build:
+      context: .
+      dockerfile: status-dashboard-api/Dockerfile
     ports:
       - "8085:8085"
     environment:
       - PORT=8085
     depends_on:
+      dependencies:
+        condition: service_completed_successfully
       kafka:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # Frontend
@@ -118,3 +157,5 @@ services:
 
 volumes:
   build-artifacts:
+  build-work:
+  redis-data:

@@ -1,0 +1,3086 @@
+This file is a merged representation of a subset of the codebase, containing files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching these patterns are excluded: **/components/ui/**, **/*.css
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+api-gateway/
+  auth/
+    context.go
+    jwt.go
+  Dockerfile
+  go.mod
+  main.go
+build-orchestrator/
+  Dockerfile
+  go.mod
+  main.go
+builder/
+  Dockerfile
+  go.mod
+  main.go
+notification/
+  Dockerfile
+  go.mod
+  main.go
+shared/
+  kafka/
+    consumer.go
+    producer.go
+  message/
+    message.go
+  Dockerfile
+  go.mod
+status-dashboard-api/
+  Dockerfile
+  go.mod
+  main.go
+status-dashboard-ui/
+  app/
+    layout.tsx
+    page.tsx
+  lib/
+    utils.ts
+  public/
+    file.svg
+    globe.svg
+    next.svg
+    vercel.svg
+    window.svg
+  .gitignore
+  components.json
+  Dockerfile
+  eslint.config.mjs
+  next.config.ts
+  package.json
+  pnpm-workspace.yaml
+  postcss.config.mjs
+  README.md
+  tsconfig.json
+storage/
+  Dockerfile
+  go.mod
+  main.go
+build.sh
+dependencies.Dockerfile
+docker-compose.yml
+go.mod
+go.work
+go.work.sum
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="api-gateway/auth/context.go">
+package auth
+
+import (
+	"context"
+)
+
+type contextKey string
+
+const userClaimsContextKey contextKey = "userClaims"
+
+func ContextWithUserClaims(ctx context.Context, claims *UserClaims) context.Context {
+	return context.WithValue(ctx, userClaimsContextKey, claims)
+}
+
+func UserClaimsFromContext(ctx context.Context) (*UserClaims, bool) {
+	claims, ok := ctx.Value(userClaimsContextKey).(*UserClaims)
+	return claims, ok
+}
+</file>
+
+<file path="api-gateway/auth/jwt.go">
+package auth
+
+import (
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+var (
+	jwtSecretKey = []byte("your-secret-key")
+)
+
+type UserClaims struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Role  string `json:"role"`
+	jwt.RegisteredClaims
+}
+
+func GenerateToken(userID, email, role string) (string, error) {
+	claims := UserClaims{
+		ID:    userID,
+		Email: email,
+		Role:  role,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtSecretKey)
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
+}
+
+func ValidateToken(tokenString string) (*UserClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &UserClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecretKey, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(*UserClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, errors.New("invalid token")
+}
+
+// AuthMiddleware validates JWT tokens
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for login and health check endpoints
+		if r.URL.Path == "/api/login" || r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Authorization header is required", http.StatusUnauthorized)
+			return
+		}
+
+		tokenParts := strings.Split(authHeader, " ")
+		if len(tokenParts) != 2 || tokenParts[0] != "Bearer" {
+			http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
+			return
+		}
+
+		claims, err := ValidateToken(tokenParts[1])
+		if err != nil {
+			http.Error(w, "Invalid token: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		ctx := r.Context()
+		ctx = ContextWithUserClaims(ctx, claims)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+</file>
+
+<file path="api-gateway/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/api-gateway
+COPY api-gateway/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o api-gateway .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/api-gateway/api-gateway .
+EXPOSE 8080
+CMD ["./api-gateway"]
+</file>
+
+<file path="api-gateway/go.mod">
+module gobuild/api-gateway
+
+go 1.24.3
+
+require (
+	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/google/uuid v1.3.0
+	github.com/gorilla/mux v1.8.1
+	gobuild/shared v0.0.0
+)
+
+require github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="api-gateway/main.go">
+package main
+
+import (
+	"encoding/json"
+	"github.com/google/uuid"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/gorilla/mux"
+	"gobuild/api-gateway/auth"
+	"gobuild/shared/kafka"
+	"gobuild/shared/message"
+)
+
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token string `json:"token"`
+}
+
+type BuildRequest struct {
+	RepositoryURL string `json:"repository_url"`
+	Branch        string `json:"branch"`
+	CommitHash    string `json:"commit_hash"`
+}
+
+type BuildResponse struct {
+	BuildID string `json:"build_id"`
+	Message string `json:"message"`
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	// Initialize Kafka producer
+	kafkaProducer, err := kafka.NewProducer("kafka:29092")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+
+	r := mux.NewRouter()
+
+	r.Use(auth.AuthMiddleware)
+
+	r.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
+		var loginReq LoginRequest
+		if err := json.NewDecoder(r.Body).Decode(&loginReq); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// TODO
+		// In a real application, you would validate the credentials against a database
+		// For simplicity, we're just checking if email and password are not empty
+		if loginReq.Email == "" || loginReq.Password == "" {
+			http.Error(w, "Email and password are required", http.StatusBadRequest)
+			return
+		}
+
+		// Generate a token for the user
+		token, err := auth.GenerateToken("user123", loginReq.Email, "user")
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(LoginResponse{Token: token})
+	}).Methods("POST")
+
+	r.HandleFunc("/api/builds", func(w http.ResponseWriter, r *http.Request) {
+		userClaims, ok := auth.UserClaimsFromContext(r.Context())
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var buildReq BuildRequest
+		if err := json.NewDecoder(r.Body).Decode(&buildReq); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if buildReq.RepositoryURL == "" {
+			http.Error(w, "Repository URL is required", http.StatusBadRequest)
+			return
+		}
+
+		buildID := uuid.New().String()
+		buildMsg := message.BuildRequestMessage{
+			ID:            buildID,
+			RepositoryURL: buildReq.RepositoryURL,
+			Branch:        buildReq.Branch,
+			CommitHash:    buildReq.CommitHash,
+			UserID:        userClaims.ID,
+			CreatedAt:     time.Now(),
+		}
+
+		err := kafkaProducer.SendMessage("build-requests", buildID, buildMsg)
+		if err != nil {
+			log.Printf("Failed to send build request to Kafka: %v", err)
+			http.Error(w, "Failed to process build request", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(BuildResponse{
+			BuildID: buildID,
+			Message: "Build request submitted successfully",
+		})
+	}).Methods("POST")
+
+	r.HandleFunc("/api/builds/{buildId}", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		buildID := vars["buildId"]
+
+		// TODO
+		// In a real implementation, you would retrieve the build status from a database or Redis
+		// For simplicity, we're just returning a mock response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":             buildID,
+			"status":         "queued",
+			"repository_url": "https://github.com/example/repo",
+			"created_at":     time.Now().Add(-5 * time.Minute),
+		})
+	}).Methods("GET")
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("API Gateway Service is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+</file>
+
+<file path="build-orchestrator/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/build-orchestrator
+COPY build-orchestrator/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o build-orchestrator .
+
+FROM alpine:latest
+RUN apk add --no-cache librdkafka
+WORKDIR /app
+COPY --from=builder /app/build-orchestrator/build-orchestrator .
+EXPOSE 8081
+CMD ["./build-orchestrator"]
+</file>
+
+<file path="build-orchestrator/go.mod">
+module gobuild/build-orchestrator
+
+go 1.24.3
+
+require (
+	github.com/go-redis/redis/v8 v8.11.5
+	github.com/gorilla/mux v1.8.1
+	gobuild/shared v0.0.0
+)
+
+require (
+	github.com/cespare/xxhash/v2 v2.1.2 // indirect
+	github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+)
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="build-orchestrator/main.go">
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/gorilla/mux"
+	"gobuild/shared/kafka"
+	"gobuild/shared/message"
+)
+
+// BuildJob represents a build job
+type BuildJob struct {
+	ID            string    `json:"id"`
+	RepositoryURL string    `json:"repository_url"`
+	Branch        string    `json:"branch"`
+	CommitHash    string    `json:"commit_hash"`
+	UserID        string    `json:"user_id"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// BuildOrchestrator manages build jobs
+type BuildOrchestrator struct {
+	jobs          map[string]*BuildJob
+	mutex         sync.RWMutex
+	kafkaProducer *kafka.Producer
+	redisClient   *redis.Client
+}
+
+// NewBuildOrchestrator creates a new BuildOrchestrator
+func NewBuildOrchestrator(kafkaProducer *kafka.Producer, redisClient *redis.Client) *BuildOrchestrator {
+	return &BuildOrchestrator{
+		jobs:          make(map[string]*BuildJob),
+		kafkaProducer: kafkaProducer,
+		redisClient:   redisClient,
+	}
+}
+
+// ProcessBuildRequest processes a build request
+func (bo *BuildOrchestrator) ProcessBuildRequest(buildReq message.BuildRequestMessage) error {
+	// Create a new build job
+	job := &BuildJob{
+		ID:            buildReq.ID,
+		RepositoryURL: buildReq.RepositoryURL,
+		Branch:        buildReq.Branch,
+		CommitHash:    buildReq.CommitHash,
+		UserID:        buildReq.UserID,
+		Status:        "queued",
+		CreatedAt:     buildReq.CreatedAt,
+		UpdatedAt:     time.Now(),
+	}
+
+	// Store the job in memory
+	bo.mutex.Lock()
+	bo.jobs[job.ID] = job
+	bo.mutex.Unlock()
+
+	// Store the job in Redis for persistence
+	jobJSON, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:%s", job.ID), jobJSON, 24*time.Hour).Err()
+	if err != nil {
+		return err
+	}
+
+	// Send a status update
+	statusMsg := message.BuildStatusMessage{
+		BuildID:   job.ID,
+		Status:    job.Status,
+		Message:   "Build queued",
+		UpdatedAt: job.UpdatedAt,
+	}
+	err = bo.kafkaProducer.SendMessage("build-status", job.ID, statusMsg)
+	if err != nil {
+		return err
+	}
+
+	// Forward the job to the builder
+	return bo.kafkaProducer.SendMessage("build-requests", job.ID, buildReq)
+}
+
+// UpdateBuildStatus updates the status of a build job
+func (bo *BuildOrchestrator) UpdateBuildStatus(buildID, status, msg string) error {
+	bo.mutex.Lock()
+	defer bo.mutex.Unlock()
+
+	job, exists := bo.jobs[buildID]
+	if !exists {
+		return fmt.Errorf("build job not found: %s", buildID)
+	}
+
+	job.Status = status
+	job.UpdatedAt = time.Now()
+
+	// Store the updated job in Redis
+	jobJSON, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:%s", job.ID), jobJSON, 24*time.Hour).Err()
+	if err != nil {
+		return err
+	}
+
+	// Send a status update
+	statusMsg := message.BuildStatusMessage{
+		BuildID:   job.ID,
+		Status:    job.Status,
+		Message:   msg,
+		UpdatedAt: job.UpdatedAt,
+	}
+	return bo.kafkaProducer.SendMessage("build-status", job.ID, statusMsg)
+}
+
+// GetBuildJob retrieves a build job by ID
+func (bo *BuildOrchestrator) GetBuildJob(buildID string) (*BuildJob, error) {
+	bo.mutex.RLock()
+	job, exists := bo.jobs[buildID]
+	bo.mutex.RUnlock()
+
+	if exists {
+		return job, nil
+	}
+
+	// Try to get from Redis
+	ctx := context.Background()
+	jobJSON, err := bo.redisClient.Get(ctx, fmt.Sprintf("build:%s", buildID)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			return nil, fmt.Errorf("build job not found: %s", buildID)
+		}
+		return nil, err
+	}
+
+	// Use a different variable name to avoid redeclaration
+	var retrievedJob BuildJob
+	err = json.Unmarshal([]byte(jobJSON), &retrievedJob)
+	if err != nil {
+		return nil, err
+	}
+
+	// Cache the job in memory
+	bo.mutex.Lock()
+	bo.jobs[retrievedJob.ID] = &retrievedJob
+	bo.mutex.Unlock()
+
+	return &retrievedJob, nil
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8081"
+	}
+
+	kafkaProducer, err := kafka.NewProducer("kafka:29092")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+
+	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "build-orchestrator")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka consumer: %v", err)
+	}
+	defer kafkaConsumer.Close()
+
+	// Subscribe to build request topic
+	err = kafkaConsumer.Subscribe([]string{"build-requests"})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to topics: %v", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: "redis:6379",
+	})
+	defer redisClient.Close()
+
+	orchestrator := NewBuildOrchestrator(kafkaProducer, redisClient)
+
+	// Start consuming build requests
+	go func() {
+		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
+			var buildReq message.BuildRequestMessage
+			if err := kafka.UnmarshalMessage(value, &buildReq); err != nil {
+				return err
+			}
+
+			log.Printf("Received build request: %s", buildReq.ID)
+			return orchestrator.ProcessBuildRequest(buildReq)
+		})
+	}()
+
+	r := mux.NewRouter()
+
+	r.HandleFunc("/api/builds/{buildId}", func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		buildID := vars["buildId"]
+
+		job, err := orchestrator.GetBuildJob(buildID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(job)
+	}).Methods("GET")
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("Build Orchestrator Service is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+</file>
+
+<file path="builder/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/builder
+COPY builder/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o builder .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates git && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/builder/builder .
+EXPOSE 8082
+CMD ["./builder"]
+</file>
+
+<file path="builder/go.mod">
+module gobuild/builder
+
+go 1.24.3
+
+require (
+	github.com/gorilla/mux v1.8.1
+	gobuild/shared v0.0.0
+)
+
+require github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="builder/main.go">
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+
+	"github.com/gorilla/mux"
+	"gobuild/shared/kafka"
+	"gobuild/shared/message"
+)
+
+// Builder executes build jobs
+type Builder struct {
+	id            string
+	workDir       string
+	kafkaProducer *kafka.Producer
+}
+
+// NewBuilder creates a new Builder
+func NewBuilder(id, workDir string, kafkaProducer *kafka.Producer) *Builder {
+	return &Builder{
+		id:            id,
+		workDir:       workDir,
+		kafkaProducer: kafkaProducer,
+	}
+}
+
+// ProcessBuildJob processes a build job
+func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
+	// Send status update: in-progress
+	statusMsg := message.BuildStatusMessage{
+		BuildID:   buildReq.ID,
+		Status:    "in-progress",
+		Message:   "Build started",
+		UpdatedAt: time.Now(),
+	}
+	err := b.kafkaProducer.SendMessage("build-status", buildReq.ID, statusMsg)
+	if err != nil {
+		return err
+	}
+
+	buildDir := filepath.Join(b.workDir, buildReq.ID)
+	err = os.MkdirAll(buildDir, 0755)
+	if err != nil {
+		return b.failBuild(buildReq.ID, fmt.Sprintf("Failed to create build directory: %v", err))
+	}
+
+	logMsg := message.BuildLogMessage{
+		BuildID:   buildReq.ID,
+		LogEntry:  "Cloning repository...",
+		Timestamp: time.Now(),
+	}
+	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+	cloneCmd := exec.Command("git", "clone", buildReq.RepositoryURL, buildDir)
+	output, err := cloneCmd.CombinedOutput()
+	if err != nil {
+		logMsg := message.BuildLogMessage{
+			BuildID:   buildReq.ID,
+			LogEntry:  fmt.Sprintf("Clone failed: %s\n%s", err.Error(), output),
+			Timestamp: time.Now(),
+		}
+		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		return b.failBuild(buildReq.ID, "Failed to clone repository")
+	}
+
+	if buildReq.Branch != "" {
+		logMsg := message.BuildLogMessage{
+			BuildID:   buildReq.ID,
+			LogEntry:  fmt.Sprintf("Checking out branch: %s", buildReq.Branch),
+			Timestamp: time.Now(),
+		}
+		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+		checkoutCmd := exec.Command("git", "checkout", buildReq.Branch)
+		checkoutCmd.Dir = buildDir
+		output, err := checkoutCmd.CombinedOutput()
+		if err != nil {
+			logMsg := message.BuildLogMessage{
+				BuildID:   buildReq.ID,
+				LogEntry:  fmt.Sprintf("Checkout failed: %s\n%s", err.Error(), output),
+				Timestamp: time.Now(),
+			}
+			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+			return b.failBuild(buildReq.ID, "Failed to checkout branch")
+		}
+	}
+
+	buildFilePath := filepath.Join(buildDir, "build.sh")
+	if _, err := os.Stat(buildFilePath); os.IsNotExist(err) {
+		projectType := b.detectProjectType(buildDir)
+		switch projectType {
+		case "node":
+			logMsg := message.BuildLogMessage{
+				BuildID:   buildReq.ID,
+				LogEntry:  "Detected Node.js project, running npm install and build",
+				Timestamp: time.Now(),
+			}
+			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+			npmInstallCmd := exec.Command("npm", "install")
+			npmInstallCmd.Dir = buildDir
+			output, err := npmInstallCmd.CombinedOutput()
+			if err != nil {
+				logMsg := message.BuildLogMessage{
+					BuildID:   buildReq.ID,
+					LogEntry:  fmt.Sprintf("npm install failed: %s\n%s", err.Error(), output),
+					Timestamp: time.Now(),
+				}
+				b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+				return b.failBuild(buildReq.ID, "Failed to install dependencies")
+			}
+
+			npmBuildCmd := exec.Command("npm", "run", "build")
+			npmBuildCmd.Dir = buildDir
+			output, err = npmBuildCmd.CombinedOutput()
+			if err != nil {
+				logMsg := message.BuildLogMessage{
+					BuildID:   buildReq.ID,
+					LogEntry:  fmt.Sprintf("npm build failed: %s\n%s", err.Error(), output),
+					Timestamp: time.Now(),
+				}
+				b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+				return b.failBuild(buildReq.ID, "Failed to build project")
+			}
+		case "go":
+			logMsg := message.BuildLogMessage{
+				BuildID:   buildReq.ID,
+				LogEntry:  "Detected Go project, running go build",
+				Timestamp: time.Now(),
+			}
+			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+			goBuildCmd := exec.Command("go", "build", "-o", "app")
+			goBuildCmd.Dir = buildDir
+			output, err := goBuildCmd.CombinedOutput()
+			if err != nil {
+				logMsg := message.BuildLogMessage{
+					BuildID:   buildReq.ID,
+					LogEntry:  fmt.Sprintf("go build failed: %s\n%s", err.Error(), output),
+					Timestamp: time.Now(),
+				}
+				b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+				return b.failBuild(buildReq.ID, "Failed to build project")
+			}
+		default:
+			return b.failBuild(buildReq.ID, "Unknown project type, no build script found")
+		}
+	} else {
+		logMsg := message.BuildLogMessage{
+			BuildID:   buildReq.ID,
+			LogEntry:  "Executing build script",
+			Timestamp: time.Now(),
+		}
+		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+		buildCmd := exec.Command("/bin/sh", "build.sh")
+		buildCmd.Dir = buildDir
+		output, err := buildCmd.CombinedOutput()
+		if err != nil {
+			logMsg := message.BuildLogMessage{
+				BuildID:   buildReq.ID,
+				LogEntry:  fmt.Sprintf("Build script failed: %s\n%s", err.Error(), output),
+				Timestamp: time.Now(),
+			}
+			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+			return b.failBuild(buildReq.ID, "Build script failed")
+		}
+	}
+
+	logMsg = message.BuildLogMessage{
+		BuildID:   buildReq.ID,
+		LogEntry:  "Build completed successfully",
+		Timestamp: time.Now(),
+	}
+	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+	// Create a tarball of the build artifacts
+	artifactPath := fmt.Sprintf("/app/artifacts/%s.tar.gz", buildReq.ID)
+	tarCmd := exec.Command("tar", "-czf", artifactPath, ".")
+	tarCmd.Dir = buildDir
+	output, err = tarCmd.CombinedOutput()
+	if err != nil {
+		logMsg := message.BuildLogMessage{
+			BuildID:   buildReq.ID,
+			LogEntry:  fmt.Sprintf("Failed to create artifact: %s\n%s", err.Error(), output),
+			Timestamp: time.Now(),
+		}
+		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		return b.failBuild(buildReq.ID, "Failed to create artifact")
+	}
+
+	completionMsg := message.BuildCompletionMessage{
+		BuildID:     buildReq.ID,
+		Status:      "success",
+		ArtifactURL: fmt.Sprintf("/artifacts/%s.tar.gz", buildReq.ID),
+		Duration:    time.Since(buildReq.CreatedAt).Milliseconds(),
+		CompletedAt: time.Now(),
+	}
+	err = b.kafkaProducer.SendMessage("build-completions", buildReq.ID, completionMsg)
+	if err != nil {
+		return err
+	}
+
+	statusMsg = message.BuildStatusMessage{
+		BuildID:   buildReq.ID,
+		Status:    "completed",
+		Message:   "Build completed successfully",
+		UpdatedAt: time.Now(),
+	}
+	return b.kafkaProducer.SendMessage("build-status", buildReq.ID, statusMsg)
+}
+
+// failBuild handles build failures
+func (b *Builder) failBuild(buildID, errorMsg string) error {
+	completionMsg := message.BuildCompletionMessage{
+		BuildID:     buildID,
+		Status:      "failure",
+		ArtifactURL: "",
+		Duration:    0, // We don't have the start time here
+		CompletedAt: time.Now(),
+	}
+	err := b.kafkaProducer.SendMessage("build-completions", buildID, completionMsg)
+	if err != nil {
+		return err
+	}
+
+	statusMsg := message.BuildStatusMessage{
+		BuildID:   buildID,
+		Status:    "failed",
+		Message:   errorMsg,
+		UpdatedAt: time.Now(),
+	}
+	return b.kafkaProducer.SendMessage("build-status", buildID, statusMsg)
+}
+
+// detectProjectType attempts to determine the type of project in the directory
+func (b *Builder) detectProjectType(dir string) string {
+	// Check for package.json (Node.js)
+	if _, err := os.Stat(filepath.Join(dir, "package.json")); !os.IsNotExist(err) {
+		return "node"
+	}
+
+	// Check for go.mod (Go)
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); !os.IsNotExist(err) {
+		return "go"
+	}
+
+	return "unknown"
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8082"
+	}
+
+	workDir := "/app/work"
+	err := os.MkdirAll(workDir, 0755)
+	if err != nil {
+		log.Fatalf("Failed to create work directory: %v", err)
+	}
+
+	kafkaProducer, err := kafka.NewProducer("kafka:29092")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka producer: %v", err)
+	}
+	defer kafkaProducer.Close()
+
+	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "builder")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka consumer: %v", err)
+	}
+	defer kafkaConsumer.Close()
+
+	err = kafkaConsumer.Subscribe([]string{"build-requests"})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to topics: %v", err)
+	}
+
+	builder := NewBuilder(fmt.Sprintf("builder-%s", os.Getenv("HOSTNAME")), workDir, kafkaProducer)
+
+	go func() {
+		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
+			var buildReq message.BuildRequestMessage
+			if err := kafka.UnmarshalMessage(value, &buildReq); err != nil {
+				return err
+			}
+
+			log.Printf("Processing build request: %s", buildReq.ID)
+			return builder.ProcessBuildJob(buildReq)
+		})
+	}()
+
+	r := mux.NewRouter()
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("Builder Service is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+</file>
+
+<file path="notification/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/notification
+COPY notification/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o notification .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/notification/notification .
+EXPOSE 8084
+CMD ["./notification"]
+</file>
+
+<file path="notification/go.mod">
+module gobuild/notification
+
+go 1.24.3
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/gorilla/websocket v1.5.3
+	gobuild/shared v0.0.0
+)
+
+require github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="notification/main.go">
+package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+	"sync"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
+	"gobuild/shared/kafka"
+	"gobuild/shared/message"
+)
+
+type WebSocketClient struct {
+	conn     *websocket.Conn
+	buildID  string
+	clientID string
+}
+
+type NotificationService struct {
+	clients      map[string]*WebSocketClient
+	clientsMutex sync.RWMutex
+	upgrader     websocket.Upgrader
+}
+
+func NewNotificationService() *NotificationService {
+	return &NotificationService{
+		clients: make(map[string]*WebSocketClient),
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				return true // Allow all origins for this example
+			},
+		},
+	}
+}
+
+func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Upgrade the HTTP connection to a WebSocket connection
+	conn, err := ns.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade connection: %v", err)
+		return
+	}
+
+	buildID := r.URL.Query().Get("buildId")
+	clientID := r.URL.Query().Get("clientId")
+
+	if buildID == "" || clientID == "" {
+		log.Printf("Missing buildId or clientId")
+		conn.Close()
+		return
+	}
+
+	client := &WebSocketClient{
+		conn:     conn,
+		buildID:  buildID,
+		clientID: clientID,
+	}
+
+	ns.clientsMutex.Lock()
+	ns.clients[clientID] = client
+	ns.clientsMutex.Unlock()
+
+	log.Printf("Client connected: %s for build %s", clientID, buildID)
+
+	// Handle disconnection
+	defer func() {
+		ns.clientsMutex.Lock()
+		delete(ns.clients, clientID)
+		ns.clientsMutex.Unlock()
+		conn.Close()
+		log.Printf("Client disconnected: %s", clientID)
+	}()
+
+	// Keep the connection alive
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+}
+
+// BroadcastBuildStatus broadcasts a build status update to all connected clients
+func (ns *NotificationService) BroadcastBuildStatus(statusMsg message.BuildStatusMessage) {
+	ns.clientsMutex.RLock()
+	defer ns.clientsMutex.RUnlock()
+
+	for _, client := range ns.clients {
+		if client.buildID == statusMsg.BuildID || client.buildID == "" {
+			client.conn.WriteJSON(map[string]interface{}{
+				"type":    "status",
+				"buildId": statusMsg.BuildID,
+				"status":  statusMsg.Status,
+				"message": statusMsg.Message,
+				"time":    statusMsg.UpdatedAt,
+			})
+		}
+	}
+}
+
+// BroadcastBuildLog broadcasts a build log entry to all connected clients
+func (ns *NotificationService) BroadcastBuildLog(logMsg message.BuildLogMessage) {
+	ns.clientsMutex.RLock()
+	defer ns.clientsMutex.RUnlock()
+
+	for _, client := range ns.clients {
+		if client.buildID == logMsg.BuildID || client.buildID == "" {
+			client.conn.WriteJSON(map[string]interface{}{
+				"type":    "log",
+				"buildId": logMsg.BuildID,
+				"log":     logMsg.LogEntry,
+				"time":    logMsg.Timestamp,
+			})
+		}
+	}
+}
+
+func (ns *NotificationService) BroadcastBuildCompletion(completionMsg message.BuildCompletionMessage) {
+	ns.clientsMutex.RLock()
+	defer ns.clientsMutex.RUnlock()
+
+	for _, client := range ns.clients {
+		if client.buildID == completionMsg.BuildID || client.buildID == "" {
+			client.conn.WriteJSON(map[string]interface{}{
+				"type":        "completion",
+				"buildId":     completionMsg.BuildID,
+				"status":      completionMsg.Status,
+				"artifactUrl": completionMsg.ArtifactURL,
+				"duration":    completionMsg.Duration,
+				"time":        completionMsg.CompletedAt,
+			})
+		}
+	}
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8084"
+	}
+
+	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "notification")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka consumer: %v", err)
+	}
+	defer kafkaConsumer.Close()
+
+	// Subscribe to build event topics
+	err = kafkaConsumer.Subscribe([]string{"build-status", "build-logs", "build-completions"})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to topics: %v", err)
+	}
+
+	notificationService := NewNotificationService()
+
+	go func() {
+		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
+			topic := string(key)
+
+			switch topic {
+			case "build-status":
+				var statusMsg message.BuildStatusMessage
+				if err := kafka.UnmarshalMessage(value, &statusMsg); err != nil {
+					return err
+				}
+				notificationService.BroadcastBuildStatus(statusMsg)
+			case "build-logs":
+				var logMsg message.BuildLogMessage
+				if err := kafka.UnmarshalMessage(value, &logMsg); err != nil {
+					return err
+				}
+				notificationService.BroadcastBuildLog(logMsg)
+			case "build-completions":
+				var completionMsg message.BuildCompletionMessage
+				if err := kafka.UnmarshalMessage(value, &completionMsg); err != nil {
+					return err
+				}
+				notificationService.BroadcastBuildCompletion(completionMsg)
+			}
+
+			return nil
+		})
+	}()
+
+	r := mux.NewRouter()
+
+	r.HandleFunc("/ws", notificationService.HandleWebSocket)
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("Notification Service is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+</file>
+
+<file path="shared/kafka/consumer.go">
+package kafka
+
+import (
+	"encoding/json"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+type MessageHandler func(key []byte, value []byte) error
+
+type Consumer struct {
+	consumer *kafka.Consumer
+}
+
+func NewConsumer(bootstrapServers, groupID string) (*Consumer, error) {
+	c, err := kafka.NewConsumer(&kafka.ConfigMap{
+		"bootstrap.servers":  bootstrapServers,
+		"group.id":           groupID,
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": "true",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &Consumer{consumer: c}, nil
+}
+
+func (c *Consumer) Subscribe(topics []string) error {
+	return c.consumer.SubscribeTopics(topics, nil)
+}
+
+func (c *Consumer) ConsumeMessages(handler MessageHandler) {
+	sigchan := make(chan os.Signal, 1)
+	signal.Notify(sigchan, syscall.SIGINT, syscall.SIGTERM)
+
+	run := true
+	for run {
+		select {
+		case sig := <-sigchan:
+			log.Printf("Caught signal %v: terminating\n", sig)
+			run = false
+		default:
+			ev := c.consumer.Poll(100)
+			if ev == nil {
+				continue
+			}
+
+			switch e := ev.(type) {
+			case *kafka.Message:
+				err := handler(e.Key, e.Value)
+				if err != nil {
+					log.Printf("Error processing message: %v\n", err)
+				}
+			case kafka.Error:
+				log.Printf("Error: %v\n", e)
+				if e.Code() == kafka.ErrAllBrokersDown {
+					run = false
+				}
+			}
+		}
+	}
+}
+
+// UnmarshalMessage unmarshals a Kafka message value into the provided struct
+func UnmarshalMessage(value []byte, v interface{}) error {
+	return json.Unmarshal(value, v)
+}
+
+func (c *Consumer) Close() {
+	c.consumer.Close()
+}
+</file>
+
+<file path="shared/kafka/producer.go">
+package kafka
+
+import (
+	"encoding/json"
+	"log"
+
+	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+)
+
+// Producer wraps the Kafka producer
+type Producer struct {
+	producer *kafka.Producer
+}
+
+// NewProducer creates a new Kafka producer
+func NewProducer(bootstrapServers string) (*Producer, error) {
+	p, err := kafka.NewProducer(&kafka.ConfigMap{
+		"bootstrap.servers": bootstrapServers,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Start a goroutine to handle delivery reports
+	go func() {
+		for e := range p.Events() {
+			switch ev := e.(type) {
+			case *kafka.Message:
+				if ev.TopicPartition.Error != nil {
+					log.Printf("Failed to deliver message: %v\n", ev.TopicPartition.Error)
+				}
+			}
+		}
+	}()
+
+	return &Producer{producer: p}, nil
+}
+
+// SendMessage sends a message to the specified topic
+func (p *Producer) SendMessage(topic string, key string, value interface{}) error {
+	jsonValue, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+
+	return p.producer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+		Key:            []byte(key),
+		Value:          jsonValue,
+	}, nil)
+}
+
+// Close closes the producer
+func (p *Producer) Close() {
+	p.producer.Close()
+}
+</file>
+
+<file path="shared/message/message.go">
+package message
+
+import (
+	"time"
+)
+
+type BuildRequestMessage struct {
+	ID            string    `json:"id"`
+	RepositoryURL string    `json:"repository_url"`
+	Branch        string    `json:"branch"`
+	CommitHash    string    `json:"commit_hash"`
+	UserID        string    `json:"user_id"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type BuildStatusMessage struct {
+	BuildID   string    `json:"build_id"`
+	Status    string    `json:"status"` // queued, in-progress, completed, failed
+	Message   string    `json:"message"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type BuildLogMessage struct {
+	BuildID   string    `json:"build_id"`
+	LogEntry  string    `json:"log_entry"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type BuildCompletionMessage struct {
+	BuildID     string    `json:"build_id"`
+	Status      string    `json:"status"` // success or failure
+	ArtifactURL string    `json:"artifact_url,omitempty"`
+	Duration    int64     `json:"duration"` // in milliseconds
+	CompletedAt time.Time `json:"completed_at"`
+}
+</file>
+
+<file path="shared/Dockerfile">
+FROM golang:1.24.3-alpine
+RUN apk add --no-cache gcc g++ make git bash ca-certificates librdkafka-dev pkgconfig
+
+WORKDIR /app/shared
+COPY . .
+RUN go mod tidy
+</file>
+
+<file path="shared/go.mod">
+module gobuild/shared
+
+go 1.24.3
+
+require github.com/confluentinc/confluent-kafka-go/v2 v2.3.0
+</file>
+
+<file path="status-dashboard-api/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/status-dashboard-api
+COPY status-dashboard-api/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o status-dashboard-api .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/status-dashboard-api/status-dashboard-api .
+EXPOSE 8085
+CMD ["./status-dashboard-api"]
+</file>
+
+<file path="status-dashboard-api/go.mod">
+module gobuild/status-dashboard-api
+
+go 1.24.3
+
+require (
+	github.com/go-redis/redis/v8 v8.11.5
+	github.com/gorilla/mux v1.8.1
+	gobuild/shared v0.0.0
+)
+
+require (
+	github.com/cespare/xxhash/v2 v2.1.2 // indirect
+	github.com/confluentinc/confluent-kafka-go v1.9.2 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+)
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="status-dashboard-api/main.go">
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/go-redis/redis/v8"
+	"github.com/gorilla/mux"
+	"gobuild/shared/kafka"
+	"gobuild/shared/message"
+)
+
+type BuildStatus struct {
+	ID            string    `json:"id"`
+	RepositoryURL string    `json:"repository_url"`
+	Branch        string    `json:"branch,omitempty"`
+	CommitHash    string    `json:"commit_hash,omitempty"`
+	Status        string    `json:"status"`
+	Message       string    `json:"message,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+	ArtifactURL   string    `json:"artifact_url,omitempty"`
+	Logs          []string  `json:"logs,omitempty"`
+}
+
+type StatusDashboardAPI struct {
+	redisClient *redis.Client
+	builds      map[string]*BuildStatus
+}
+
+// NewStatusDashboardAPI creates a new StatusDashboardAPI
+func NewStatusDashboardAPI(redisClient *redis.Client) *StatusDashboardAPI {
+	return &StatusDashboardAPI{
+		redisClient: redisClient,
+		builds:      make(map[string]*BuildStatus),
+	}
+}
+
+func (api *StatusDashboardAPI) GetBuilds(w http.ResponseWriter, r *http.Request) {
+	ctx := context.Background()
+
+	keys, err := api.redisClient.Keys(ctx, "build:*").Result()
+	if err != nil {
+		http.Error(w, "Failed to retrieve builds", http.StatusInternalServerError)
+		return
+	}
+
+	builds := make([]*BuildStatus, 0, len(keys))
+
+	for _, key := range keys {
+		buildJSON, err := api.redisClient.Get(ctx, key).Result()
+		if err != nil {
+			log.Printf("Failed to get build %s: %v", key, err)
+			continue
+		}
+
+		var build BuildStatus
+		err = json.Unmarshal([]byte(buildJSON), &build)
+		if err != nil {
+			log.Printf("Failed to unmarshal build %s: %v", key, err)
+			continue
+		}
+
+		builds = append(builds, &build)
+	}
+
+	// TODO: remove in the future
+	// If no builds found in Redis, use the mock data
+	if len(builds) == 0 {
+		builds = append(builds,
+			&BuildStatus{
+				ID:            "build-123",
+				RepositoryURL: "https://github.com/example/repo",
+				Status:        "completed",
+				Message:       "Build completed successfully",
+				CreatedAt:     time.Now().Add(-30 * time.Minute),
+				UpdatedAt:     time.Now().Add(-25 * time.Minute),
+				ArtifactURL:   "/artifacts/build-123.tar.gz",
+				Logs:          []string{"Build completed successfully"},
+			},
+			&BuildStatus{
+				ID:            "build-124",
+				RepositoryURL: "https://github.com/example/repo",
+				Status:        "in-progress",
+				Message:       "Installing dependencies...",
+				CreatedAt:     time.Now().Add(-10 * time.Minute),
+				UpdatedAt:     time.Now().Add(-5 * time.Minute),
+				Logs:          []string{"Cloning repository...", "Installing dependencies..."},
+			},
+			&BuildStatus{
+				ID:            "build-125",
+				RepositoryURL: "https://github.com/example/repo",
+				Status:        "failed",
+				Message:       "Build failed: compilation error",
+				CreatedAt:     time.Now().Add(-20 * time.Minute),
+				UpdatedAt:     time.Now().Add(-18 * time.Minute),
+				Logs:          []string{"Cloning repository...", "Build failed: compilation error"},
+			},
+		)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(builds)
+}
+
+func (api *StatusDashboardAPI) GetBuild(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	buildID := vars["buildId"]
+
+	ctx := context.Background()
+
+	buildJSON, err := api.redisClient.Get(ctx, "build:"+buildID).Result()
+	if err != nil {
+		if err == redis.Nil {
+			// TODO: remove in the future
+			// If build not found in Redis, check our mock data
+			if buildID == "build-123" {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(BuildStatus{
+					ID:            "build-123",
+					RepositoryURL: "https://github.com/example/repo",
+					Status:        "completed",
+					Message:       "Build completed successfully",
+					CreatedAt:     time.Now().Add(-30 * time.Minute),
+					UpdatedAt:     time.Now().Add(-25 * time.Minute),
+					ArtifactURL:   "/artifacts/build-123.tar.gz",
+					Logs:          []string{"Build completed successfully"},
+				})
+				return
+			} else if buildID == "build-124" {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(BuildStatus{
+					ID:            "build-124",
+					RepositoryURL: "https://github.com/example/repo",
+					Status:        "in-progress",
+					Message:       "Installing dependencies...",
+					CreatedAt:     time.Now().Add(-10 * time.Minute),
+					UpdatedAt:     time.Now().Add(-5 * time.Minute),
+					Logs:          []string{"Cloning repository...", "Installing dependencies..."},
+				})
+				return
+			} else if buildID == "build-125" {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(BuildStatus{
+					ID:            "build-125",
+					RepositoryURL: "https://github.com/example/repo",
+					Status:        "failed",
+					Message:       "Build failed: compilation error",
+					CreatedAt:     time.Now().Add(-20 * time.Minute),
+					UpdatedAt:     time.Now().Add(-18 * time.Minute),
+					Logs:          []string{"Cloning repository...", "Build failed: compilation error"},
+				})
+				return
+			}
+			http.Error(w, "Build not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to retrieve build", http.StatusInternalServerError)
+		return
+	}
+
+	var build BuildStatus
+	err = json.Unmarshal([]byte(buildJSON), &build)
+	if err != nil {
+		http.Error(w, "Failed to parse build data", http.StatusInternalServerError)
+		return
+	}
+
+	logs, err := api.redisClient.LRange(ctx, "logs:"+buildID, 0, -1).Result()
+	if err != nil && err != redis.Nil {
+		log.Printf("Failed to get logs for build %s: %v", buildID, err)
+	}
+	build.Logs = logs
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(build)
+}
+
+// ProcessBuildStatus processes a build status update
+func (api *StatusDashboardAPI) ProcessBuildStatus(statusMsg message.BuildStatusMessage) {
+	ctx := context.Background()
+
+	buildJSON, err := api.redisClient.Get(ctx, "build:"+statusMsg.BuildID).Result()
+	if err != nil && err != redis.Nil {
+		log.Printf("Failed to get build %s: %v", statusMsg.BuildID, err)
+		return
+	}
+
+	var build BuildStatus
+	if err == redis.Nil {
+		// Build doesn't exist yet, create a new one
+		build = BuildStatus{
+			ID:        statusMsg.BuildID,
+			Status:    statusMsg.Status,
+			Message:   statusMsg.Message,
+			CreatedAt: statusMsg.UpdatedAt,
+			UpdatedAt: statusMsg.UpdatedAt,
+		}
+	} else {
+		// Update existing build
+		err = json.Unmarshal([]byte(buildJSON), &build)
+		if err != nil {
+			log.Printf("Failed to unmarshal build %s: %v", statusMsg.BuildID, err)
+			return
+		}
+
+		build.Status = statusMsg.Status
+		build.Message = statusMsg.Message
+		build.UpdatedAt = statusMsg.UpdatedAt
+	}
+
+	// Save the updated build to Redis
+	buildJSON, err = json.Marshal(build)
+	if err != nil {
+		log.Printf("Failed to marshal build %s: %v", statusMsg.BuildID, err)
+		return
+	}
+
+	err = api.redisClient.Set(ctx, "build:"+statusMsg.BuildID, buildJSON, 24*time.Hour).Err()
+	if err != nil {
+		log.Printf("Failed to save build %s: %v", statusMsg.BuildID, err)
+		return
+	}
+}
+
+func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
+	ctx := context.Background()
+
+	err := api.redisClient.RPush(ctx, "logs:"+logMsg.BuildID, logMsg.LogEntry).Err()
+	if err != nil {
+		log.Printf("Failed to save log entry for build %s: %v", logMsg.BuildID, err)
+		return
+	}
+
+	err = api.redisClient.Expire(ctx, "logs:"+logMsg.BuildID, 24*time.Hour).Err()
+	if err != nil {
+		log.Printf("Failed to set expiry for logs of build %s: %v", logMsg.BuildID, err)
+		return
+	}
+}
+
+// ProcessBuildCompletion processes a build completion message
+func (api *StatusDashboardAPI) ProcessBuildCompletion(completionMsg message.BuildCompletionMessage) {
+	ctx := context.Background()
+
+	buildJSON, err := api.redisClient.Get(ctx, "build:"+completionMsg.BuildID).Result()
+	if err != nil {
+		log.Printf("Failed to get build %s: %v", completionMsg.BuildID, err)
+		return
+	}
+
+	var build BuildStatus
+	err = json.Unmarshal([]byte(buildJSON), &build)
+	if err != nil {
+		log.Printf("Failed to unmarshal build %s: %v", completionMsg.BuildID, err)
+		return
+	}
+
+	build.Status = completionMsg.Status
+	build.UpdatedAt = completionMsg.CompletedAt
+	build.ArtifactURL = completionMsg.ArtifactURL
+
+	buildJSON, err = json.Marshal(build)
+	if err != nil {
+		log.Printf("Failed to marshal build %s: %v", completionMsg.BuildID, err)
+		return
+	}
+
+	err = api.redisClient.Set(ctx, "build:"+completionMsg.BuildID, buildJSON, 24*time.Hour).Err()
+	if err != nil {
+		log.Printf("Failed to save build %s: %v", completionMsg.BuildID, err)
+		return
+	}
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8085"
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: "redis:6379",
+	})
+	defer redisClient.Close()
+
+	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "status-dashboard-api")
+	if err != nil {
+		log.Fatalf("Failed to create Kafka consumer: %v", err)
+	}
+	defer kafkaConsumer.Close()
+
+	err = kafkaConsumer.Subscribe([]string{"build-status", "build-logs", "build-completions"})
+	if err != nil {
+		log.Fatalf("Failed to subscribe to topics: %v", err)
+	}
+
+	api := NewStatusDashboardAPI(redisClient)
+
+	go func() {
+		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
+			topic := string(key)
+
+			switch topic {
+			case "build-status":
+				var statusMsg message.BuildStatusMessage
+				if err := kafka.UnmarshalMessage(value, &statusMsg); err != nil {
+					return err
+				}
+				api.ProcessBuildStatus(statusMsg)
+			case "build-logs":
+				var logMsg message.BuildLogMessage
+				if err := kafka.UnmarshalMessage(value, &logMsg); err != nil {
+					return err
+				}
+				api.ProcessBuildLog(logMsg)
+			case "build-completions":
+				var completionMsg message.BuildCompletionMessage
+				if err := kafka.UnmarshalMessage(value, &completionMsg); err != nil {
+					return err
+				}
+				api.ProcessBuildCompletion(completionMsg)
+			}
+
+			return nil
+		})
+	}()
+
+	r := mux.NewRouter()
+
+	// Enable CORS for frontend
+	corsMiddleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	r.HandleFunc("/api/builds", api.GetBuilds).Methods("GET")
+
+	r.HandleFunc("/api/builds/{buildId}", api.GetBuild).Methods("GET")
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrap handlers with CORS middleware
+	handler := corsMiddleware(r)
+
+	log.Printf("Status Dashboard API is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, handler))
+}
+</file>
+
+<file path="status-dashboard-ui/app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Create Next App",
+  description: "Generated by create next app",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="en">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+      >
+        {children}
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="status-dashboard-ui/app/page.tsx">
+"use client";
+
+import { useEffect, useState } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+
+type BuildStatus = {
+  id: string;
+  repository_url: string;
+  branch?: string;
+  commit_hash?: string;
+  status: string;
+  message?: string;
+  created_at: string;
+  updated_at: string;
+  artifact_url?: string;
+  logs?: string[];
+};
+
+export default function Dashboard() {
+  const [builds, setBuilds] = useState<BuildStatus[]>([]);
+  const [selectedBuild, setSelectedBuild] = useState<BuildStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [repositoryUrl, setRepositoryUrl] = useState("");
+  const [branch, setBranch] = useState("");
+  const [socket, setSocket] = useState<WebSocket | null>(null);
+
+  // Fetch builds on component mount
+  useEffect(() => {
+    const fetchBuilds = async () => {
+      try {
+        const response = await fetch("http://localhost:8085/api/builds");
+        if (!response.ok) {
+          throw new Error("Failed to fetch builds");
+        }
+        const data = await response.json();
+        setBuilds(data);
+      } catch (error) {
+        console.error("Error fetching builds:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchBuilds();
+  }, []);
+
+  // Set up WebSocket connection
+  useEffect(() => {
+    const ws = new WebSocket("ws://localhost:8084/ws?clientId=dashboard-ui&buildId=");
+
+    ws.onopen = () => {
+      console.log("WebSocket connection established");
+      setSocket(ws);
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log("WebSocket message received:", data);
+
+      // Update builds based on the message type
+      if (data.type === "status") {
+        setBuilds(prevBuilds => {
+          const updatedBuilds = [...prevBuilds];
+          const buildIndex = updatedBuilds.findIndex(build => build.id === data.buildId);
+
+          if (buildIndex >= 0) {
+            updatedBuilds[buildIndex] = {
+              ...updatedBuilds[buildIndex],
+              status: data.status,
+              message: data.message,
+              updated_at: data.time
+            };
+          }
+
+          return updatedBuilds;
+        });
+
+        // Update selected build if it's the one being updated
+        if (selectedBuild && selectedBuild.id === data.buildId) {
+          setSelectedBuild(prevBuild => {
+            if (!prevBuild) return null;
+            return {
+              ...prevBuild,
+              status: data.status,
+              message: data.message,
+              updated_at: data.time
+            };
+          });
+        }
+      } else if (data.type === "log") {
+        // Update logs for the selected build
+        if (selectedBuild && selectedBuild.id === data.buildId) {
+          setSelectedBuild(prevBuild => {
+            if (!prevBuild) return null;
+            return {
+              ...prevBuild,
+              logs: [...(prevBuild.logs || []), data.log]
+            };
+          });
+        }
+      } else if (data.type === "completion") {
+        setBuilds(prevBuilds => {
+          const updatedBuilds = [...prevBuilds];
+          const buildIndex = updatedBuilds.findIndex(build => build.id === data.buildId);
+
+          if (buildIndex >= 0) {
+            updatedBuilds[buildIndex] = {
+              ...updatedBuilds[buildIndex],
+              status: data.status,
+              artifact_url: data.artifactUrl,
+              updated_at: data.time
+            };
+          }
+
+          return updatedBuilds;
+        });
+
+        // Update selected build if it's the one being updated
+        if (selectedBuild && selectedBuild.id === data.buildId) {
+          setSelectedBuild(prevBuild => {
+            if (!prevBuild) return null;
+            return {
+              ...prevBuild,
+              status: data.status,
+              artifact_url: data.artifactUrl,
+              updated_at: data.time
+            };
+          });
+        }
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error("WebSocket error:", error);
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket connection closed");
+      setSocket(null);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  // Handle build selection
+  const handleBuildSelect = async (build: BuildStatus) => {
+    try {
+      const response = await fetch(`http://localhost:8085/api/builds/${build.id}`);
+      if (!response.ok) {
+        throw new Error("Failed to fetch build details");
+      }
+      const data = await response.json();
+      setSelectedBuild(data);
+    } catch (error) {
+      console.error("Error fetching build details:", error);
+    }
+  };
+
+  // Handle new build submission
+  const handleSubmitBuild = async () => {
+    if (!repositoryUrl) return;
+
+    try {
+      const response = await fetch("http://localhost:8080/api/builds", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // In a real app, you would include authentication
+          "Authorization": "Bearer mocktokenfornow"
+        },
+        body: JSON.stringify({
+          repository_url: repositoryUrl,
+          branch: branch || undefined
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to submit build");
+      }
+
+      const data = await response.json();
+      console.log("Build submitted:", data);
+
+      // Reset form
+      setRepositoryUrl("");
+      setBranch("");
+
+      // Refresh builds
+      const buildsResponse = await fetch("http://localhost:8085/api/builds");
+      if (buildsResponse.ok) {
+        const buildsData = await buildsResponse.json();
+        setBuilds(buildsData);
+      }
+    } catch (error) {
+      console.error("Error submitting build:", error);
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "completed":
+      case "success":
+        return "bg-green-500";
+      case "in-progress":
+      case "queued":
+        return "bg-blue-500";
+      case "failed":
+      case "failure":
+        return "bg-red-500";
+      default:
+        return "bg-gray-500";
+    }
+  };
+
+  return (
+      <div className="container mx-auto py-10">
+        <h1 className="text-3xl font-bold mb-8">GoBuild Status Dashboard</h1>
+
+        <Tabs defaultValue="builds">
+          <TabsList className="mb-4">
+            <TabsTrigger value="builds">Builds</TabsTrigger>
+            <TabsTrigger value="new">New Build</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="builds">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-1">
+                <h2 className="text-xl font-semibold mb-4">Recent Builds</h2>
+
+                {loading ? (
+                    <p>Loading builds...</p>
+                ) : builds.length === 0 ? (
+                    <Alert>
+                      <AlertTitle>No builds found</AlertTitle>
+                      <AlertDescription>
+                        Submit a new build to get started.
+                      </AlertDescription>
+                    </Alert>
+                ) : (
+                    <div className="space-y-4">
+                      {builds.map((build) => (
+                          <Card
+                              key={build.id}
+                              className={`cursor-pointer ${selectedBuild?.id === build.id ? 'border-blue-500' : ''}`}
+                              onClick={() => handleBuildSelect(build)}
+                          >
+                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                              <CardTitle className="text-sm font-medium">
+                                {build.repository_url.split('/').pop()}
+                              </CardTitle>
+                              <Badge className={getStatusColor(build.status)}>
+                                {build.status}
+                              </Badge>
+                            </CardHeader>
+                            <CardContent>
+                              <p className="text-xs text-gray-500 truncate">{build.repository_url}</p>
+                              <p className="text-xs text-gray-500 mt-1">
+                                {new Date(build.created_at).toLocaleString()}
+                              </p>
+                            </CardContent>
+                          </Card>
+                      ))}
+                    </div>
+                )}
+              </div>
+
+              <div className="lg:col-span-2">
+                <h2 className="text-xl font-semibold mb-4">Build Details</h2>
+
+                {selectedBuild ? (
+                    <Card>
+                      <CardHeader>
+                        <div className="flex justify-between items-center">
+                          <CardTitle>{selectedBuild.repository_url.split('/').pop()}</CardTitle>
+                          <Badge className={getStatusColor(selectedBuild.status)}>
+                            {selectedBuild.status}
+                          </Badge>
+                        </div>
+                        <CardDescription>
+                          Repository: {selectedBuild.repository_url}<br />
+                          {selectedBuild.branch && `Branch: ${selectedBuild.branch}`}<br />
+                          Created: {new Date(selectedBuild.created_at).toLocaleString()}<br />
+                          Updated: {new Date(selectedBuild.updated_at).toLocaleString()}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <h3 className="font-semibold mb-2">Logs</h3>
+                        <div className="bg-black text-white p-4 rounded font-mono text-xs h-64 overflow-y-auto">
+                          {selectedBuild.logs && selectedBuild.logs.length > 0 ? (
+                              selectedBuild.logs.map((log, index) => (
+                                  <div key={index}>{log}</div>
+                              ))
+                          ) : (
+                              <p>No logs available</p>
+                          )}
+                        </div>
+
+                        {selectedBuild.artifact_url && (
+                            <div className="mt-4">
+                              <Button asChild>
+                                <a
+                                    href={`http://localhost:8083${selectedBuild.artifact_url}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                  Download Artifact
+                                </a>
+                              </Button>
+                            </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                ) : (
+                    <Alert>
+                      <AlertTitle>No build selected</AlertTitle>
+                      <AlertDescription>
+                        Select a build from the list to view details.
+                      </AlertDescription>
+                    </Alert>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="new">
+            <Card>
+              <CardHeader>
+                <CardTitle>Submit New Build</CardTitle>
+                <CardDescription>
+                  Enter repository details to start a new build.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="repository">Repository URL</Label>
+                    <Input
+                        id="repository"
+                        placeholder="https://github.com/username/repo"
+                        value={repositoryUrl}
+                        onChange={(e) => setRepositoryUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="branch">Branch (optional)</Label>
+                    <Input
+                        id="branch"
+                        placeholder="main"
+                        value={branch}
+                        onChange={(e) => setBranch(e.target.value)}
+                    />
+                  </div>
+                  <Button onClick={handleSubmitBuild} disabled={!repositoryUrl}>
+                    Submit Build
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+  );
+}
+</file>
+
+<file path="status-dashboard-ui/lib/utils.ts">
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+</file>
+
+<file path="status-dashboard-ui/public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="status-dashboard-ui/public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="status-dashboard-ui/public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="status-dashboard-ui/public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="status-dashboard-ui/public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="status-dashboard-ui/.gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="status-dashboard-ui/components.json">
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "app/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "iconLibrary": "lucide"
+}
+</file>
+
+<file path="status-dashboard-ui/Dockerfile">
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN npm install -g pnpm
+
+RUN pnpm install --frozen-lockfile
+COPY . .
+ENV NODE_ENV production
+
+RUN pnpm build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/next.config.ts ./
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+RUN npm install -g pnpm
+
+EXPOSE 3000
+CMD ["pnpm", "start"]
+</file>
+
+<file path="status-dashboard-ui/eslint.config.mjs">
+import { dirname } from "path";
+import { fileURLToPath } from "url";
+import { FlatCompat } from "@eslint/eslintrc";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const compat = new FlatCompat({
+  baseDirectory: __dirname,
+});
+
+const eslintConfig = [
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
+];
+
+export default eslintConfig;
+</file>
+
+<file path="status-dashboard-ui/next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+};
+
+export default nextConfig;
+</file>
+
+<file path="status-dashboard-ui/package.json">
+{
+  "name": "status-dashboard-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.12",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.511.0",
+    "next": "15.3.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.3.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.3.2",
+    "tailwindcss": "^4",
+    "tw-animate-css": "^1.3.0",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="status-dashboard-ui/pnpm-workspace.yaml">
+onlyBuiltDependencies:
+  - '@tailwindcss/oxide'
+  - sharp
+  - unrs-resolver
+</file>
+
+<file path="status-dashboard-ui/postcss.config.mjs">
+const config = {
+  plugins: ["@tailwindcss/postcss"],
+};
+
+export default config;
+</file>
+
+<file path="status-dashboard-ui/README.md">
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+</file>
+
+<file path="status-dashboard-ui/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="storage/Dockerfile">
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/storage
+COPY storage/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o storage .
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/storage/storage .
+EXPOSE 8083
+CMD ["./storage"]
+</file>
+
+<file path="storage/go.mod">
+module gobuild/storage
+
+go 1.24.3
+
+require github.com/gorilla/mux v1.8.1
+
+replace gobuild/shared => ../shared
+</file>
+
+<file path="storage/main.go">
+package main
+
+import (
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/gorilla/mux"
+)
+
+type StorageService struct {
+	artifactsDir string
+}
+
+func NewStorageService(artifactsDir string) *StorageService {
+	return &StorageService{
+		artifactsDir: artifactsDir,
+	}
+}
+
+func (s *StorageService) GetArtifact(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	buildID := vars["buildId"]
+
+	if buildID == "" {
+		http.Error(w, "Build ID is required", http.StatusBadRequest)
+		return
+	}
+
+	artifactPath := filepath.Join(s.artifactsDir, fmt.Sprintf("%s.tar.gz", buildID))
+
+	if _, err := os.Stat(artifactPath); os.IsNotExist(err) {
+		http.Error(w, "Artifact not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.tar.gz", buildID))
+
+	http.ServeFile(w, r, artifactPath)
+}
+
+func (s *StorageService) UploadArtifact(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	buildID := vars["buildId"]
+
+	if buildID == "" {
+		http.Error(w, "Build ID is required", http.StatusBadRequest)
+		return
+	}
+
+	err := r.ParseMultipartForm(32 << 20) // 32MB max
+	if err != nil {
+		http.Error(w, "Error parsing form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	file, _, err := r.FormFile("artifact")
+	if err != nil {
+		http.Error(w, "Error retrieving file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	artifactPath := filepath.Join(s.artifactsDir, fmt.Sprintf("%s.tar.gz", buildID))
+
+	dst, err := os.Create(artifactPath)
+	if err != nil {
+		http.Error(w, "Error creating file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		http.Error(w, "Error saving file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Artifact uploaded successfully")
+}
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8083"
+	}
+
+	artifactsDir := "/app/artifacts"
+	err := os.MkdirAll(artifactsDir, 0755)
+	if err != nil {
+		log.Fatalf("Failed to create artifacts directory: %v", err)
+	}
+
+	storage := NewStorageService(artifactsDir)
+
+	r := mux.NewRouter()
+
+	r.HandleFunc("/artifacts/{buildId}", storage.GetArtifact).Methods("GET")
+
+	r.HandleFunc("/artifacts/{buildId}", storage.UploadArtifact).Methods("POST")
+
+	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	log.Printf("Storage Service is running on port %s...", port)
+	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+</file>
+
+<file path="build.sh">
+#!/bin/bash
+
+# Stop any running containers
+docker-compose down
+
+# Build the dependencies image first
+docker build -t gobuild-dependencies:latest -f dependencies.Dockerfile .
+
+# Build and start all services
+docker-compose up --build
+</file>
+
+<file path="dependencies.Dockerfile">
+FROM golang:1.24.3
+WORKDIR /app
+RUN apt-get update && apt-get install -y gcc g++ make git bash ca-certificates librdkafka-dev pkg-config
+COPY shared/ /app/shared/
+WORKDIR /app/shared
+RUN go mod tidy
+RUN go get github.com/confluentinc/confluent-kafka-go/v2@v2.3.0
+</file>
+
+<file path="docker-compose.yml">
+services:
+  # Dependencies
+  dependencies:
+    build:
+      context: .
+      dockerfile: dependencies.Dockerfile
+    image: gobuild-dependencies:latest
+
+  # Kafka for messaging
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend services
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  build-orchestrator:
+    build:
+      context: .
+      dockerfile: build-orchestrator/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  builder:
+    build:
+      context: .
+      dockerfile: builder/Dockerfile
+    environment:
+      - PORT=8082
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+    volumes:
+      - build-artifacts:/app/artifacts
+      - build-work:/app/work
+
+  storage:
+    build:
+      context: .
+      dockerfile: storage/Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      - PORT=8083
+    volumes:
+      - build-artifacts:/app/artifacts
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+
+  notification:
+    build:
+      context: .
+      dockerfile: notification/Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      - PORT=8084
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+
+  status-dashboard-api:
+    build:
+      context: .
+      dockerfile: status-dashboard-api/Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      - PORT=8085
+    depends_on:
+      dependencies:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Frontend
+  status-dashboard-ui:
+    build: ./status-dashboard-ui
+    ports:
+      - "3000:3000"
+    depends_on:
+      - status-dashboard-api
+
+volumes:
+  build-artifacts:
+  build-work:
+  redis-data:
+</file>
+
+<file path="go.mod">
+module gobuild
+
+go 1.24.3
+
+require (
+	github.com/go-redis/redis/v8 v8.11.5
+	github.com/golang-jwt/jwt/v5 v5.2.2
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/mux v1.8.1
+	github.com/gorilla/websocket v1.5.3
+)
+
+require (
+	github.com/cespare/xxhash/v2 v2.1.2 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+)
+</file>
+
+<file path="go.work">
+go 1.24.3
+
+use (
+	./api-gateway
+	./build-orchestrator
+	./builder
+	./notification
+	./shared
+	./status-dashboard-api
+	./storage
+)
+</file>
+
+<file path="go.work.sum">
+cloud.google.com/go v0.34.0 h1:eOI3/cP2VTU6uZLDYAoic+eyzzB9YyGmJ7eIjl8rOPg=
+github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 h1:UQHMgLO+TxOElx5B5HZ4hJQsoJ/PvUvKRhJHDQXO8P8=
+github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
+github.com/BurntSushi/toml v0.3.1 h1:WXkYYl6Yr3qBf1K79EBnL4mak0OimBfB0XUf9Vl28OQ=
+github.com/Microsoft/go-winio v0.5.2 h1:a9IhgEQBCUEk6QCdml9CiJGhAws+YwffDHEMp1VMrpA=
+github.com/Microsoft/go-winio v0.5.2/go.mod h1:WpS1mjBmmwHBEWmogvA2mj8546UReBk4v8QkMxJ6pZY=
+github.com/Microsoft/hcsshim v0.9.4 h1:mnUj0ivWy6UzbB1uLFqKR6F+ZyiDc7j4iGgHTpO+5+I=
+github.com/Microsoft/hcsshim v0.9.4/go.mod h1:7pLA8lDk46WKDWlVsENo92gC0XFa8rbKfyFRBqxEbCc=
+github.com/actgardner/gogen-avro/v10 v10.2.1 h1:z3pOGblRjAJCYpkIJ8CmbMJdksi4rAhaygw0dyXZ930=
+github.com/actgardner/gogen-avro/v9 v9.1.0 h1:YZ5tCwV5xnDZrG4uRDQYT2VAWZCRAG3eyQH/WYR2T6Q=
+github.com/antihax/optional v1.0.0 h1:xK2lYat7ZLaVVcIuj82J8kIro4V6kDe0AUDFboUCwcg=
+github.com/cenkalti/backoff/v4 v4.1.3 h1:cFAlzYUlVYDysBEH2T5hyJZMh3+5+WCBvSnK6Q8UtC4=
+github.com/cenkalti/backoff/v4 v4.1.3/go.mod h1:scbssz8iZGpm3xbr14ovlUdkxfGXNInqkPWOWmG2CLw=
+github.com/census-instrumentation/opencensus-proto v0.2.1 h1:glEXhBS5PSLLv4IXzLA5yPRVX4bilULVyxxbrfOtDAk=
+github.com/chzyer/logex v1.1.10 h1:Swpa1K6QvQznwJRcfTfQJmTE72DqScAa40E+fbHEXEE=
+github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e h1:fY5BOSpyZCqRo5OhCuC+XN+r/bBCmeuuJtjz+bCNIf8=
+github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1 h1:q763qf9huN11kDQavWsoZXJNW3xEE4JJyHa5Q25/sd8=
+github.com/client9/misspell v0.3.4 h1:ta993UF76GwbvJcIo3Y68y/M3WxlpEHPWIGDkJYwzJI=
+github.com/cncf/udpa/go v0.0.0-20210930031921-04548b0d99d4 h1:hzAQntlaYRkVSFEfj9OTWlVV1H155FMD8BTKktLv0QI=
+github.com/cncf/xds/go v0.0.0-20211011173535-cb28da3451f1 h1:zH8ljVhhq7yC0MIeUL/IviMtY8hx2mK8cN9wEYb8ggw=
+github.com/confluentinc/confluent-kafka-go/v2 v2.3.0 h1:icCHutJouWlQREayFwCc7lxDAhws08td+W3/gdqgZts=
+github.com/containerd/cgroups v1.0.4 h1:jN/mbWBEaz+T1pi5OFtnkQ+8qnmEbAr1Oo1FRm5B0dA=
+github.com/containerd/cgroups v1.0.4/go.mod h1:nLNQtsF7Sl2HxNebu77i1R0oDlhiTG+kO4JTrUzo6IA=
+github.com/containerd/containerd v1.6.8 h1:h4dOFDwzHmqFEP754PgfgTeVXFnLiRc6kiqC7tplDJs=
+github.com/containerd/containerd v1.6.8/go.mod h1:By6p5KqPK0/7/CgO/A6t/Gz+CUYUu2zf1hUaaymVXB0=
+github.com/creack/pty v1.1.9 h1:uDmaGzcdjhF4i/plgjmEsriH11Y0o7RKapEf/LDaM3w=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/docker/distribution v2.8.1+incompatible h1:Q50tZOPR6T/hjNsyc9g8/syEs6bk8XXApsHjKukMl68=
+github.com/docker/distribution v2.8.1+incompatible/go.mod h1:J2gT2udsDAN96Uj4KfcMRqY0/ypR+oyYUYmja8H+y+w=
+github.com/docker/docker v20.10.17+incompatible h1:JYCuMrWaVNophQTOrMMoSwudOVEfcegoZZrleKc1xwE=
+github.com/docker/docker v20.10.17+incompatible/go.mod h1:eEKB0N0r5NX/I1kEveEz05bcu8tLC/8azJZsviup8Sk=
+github.com/docker/go-connections v0.4.0 h1:El9xVISelRB7BuFusrZozjnkIM5YnzCViNKohAFqRJQ=
+github.com/docker/go-connections v0.4.0/go.mod h1:Gbd7IOopHjR8Iph03tsViu4nIes5XhDvyHbTtUxmeec=
+github.com/docker/go-units v0.5.0 h1:69rxXcBk27SvSaaxTtLh/8llcHD8vYHT7WSdRZ/jvr4=
+github.com/docker/go-units v0.5.0/go.mod h1:fgPhTUdO+D/Jk86RDLlptpiXQzgHJF7gydDDbaIK4Dk=
+github.com/envoyproxy/go-control-plane v0.10.2-0.20220325020618-49ff273808a1 h1:xvqufLtNVwAhN8NMyWklVgxnWohi+wtMGQMhtxexlm0=
+github.com/envoyproxy/protoc-gen-validate v0.1.0 h1:EQciDnbrYxy13PgWoY8AqoxGiPrpgBZ1R8UNe3ddc+A=
+github.com/frankban/quicktest v1.14.0 h1:+cqqvzZV87b4adx/5ayVOaYZ2CrvM4ejQvUdBzPPUss=
+github.com/ghodss/yaml v1.0.0 h1:wQHKEahhL6wmXdzwWG11gIVCkOv05bNOh+Rxn0yngAk=
+github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
+github.com/gogo/protobuf v1.3.2/go.mod h1:P1XiOD3dCwIKUDQYPy72D8LYyHL2YPYrpS2s69NZV8Q=
+github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b h1:VKtxabqXZkF25pY9ekfRL6a582T4P37/31XEstQ5p58=
+github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da h1:oI5xCqsCo564l8iNU+DwB5epxmsaqB+rhGL0m5jtYqE=
+github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da/go.mod h1:cIg4eruTrX1D+g88fzRXU5OdNfaM+9IcxsU14FzY7Hc=
+github.com/golang/mock v1.1.1 h1:G5FRp8JnTd7RQH5kemVNlMeyXQAztQ3mOWV95KxsXH8=
+github.com/golang/protobuf v1.5.2 h1:ROPKBNFfQgOUMifHyP+KYbvpjbdoFNs+aK7DXlji0Tw=
+github.com/golang/protobuf v1.5.3 h1:KhyjKVUg7Usr/dYsdSqoFveMYd5ko72D+zANwlG1mmg=
+github.com/golang/protobuf v1.5.3/go.mod h1:XVQd3VNwM+JqD3oG2Ue2ip4fOMUkwXdXDdiuN0vRsmY=
+github.com/golang/snappy v0.0.4 h1:yAGX7huGHXlcLOEtBnF4w7FQwA26wojNCwOYAEhLjQM=
+github.com/google/go-cmp v0.5.6 h1:BKbKCqvP6I+rmFHt06ZmyQtvB8xAkWdhFyr0ZUNZcxQ=
+github.com/google/gofuzz v1.0.0 h1:A8PeW59pxE9IoFRqBp37U+mSNaQoZ46F1f0f863XSXw=
+github.com/google/pprof v0.0.0-20211008130755-947d60d73cc0 h1:zHs+jv3LO743/zFGcByu2KmpbliCU2AhjcGgrdTwSG4=
+github.com/grpc-ecosystem/grpc-gateway v1.16.0 h1:gmcG1KaJ57LophUzW0Hy8NmPhnMZb4M0+kPpLofRdBo=
+github.com/hamba/avro v1.5.6 h1:/UBljlJ9hLjkcY7PhpI/bFYb4RMEXHEwHr17gAm/+l8=
+github.com/heetch/avro v0.3.1 h1:i6DyUBDIwzt6Fs78dYBIXYd5XrYUs/ir4+39WbHQhJE=
+github.com/heetch/avro v0.4.4 h1:5PmgDy1cX/MegMy6btJ4bUFHgT5GLfSYfc5U7+JUQzg=
+github.com/heetch/avro v0.4.4/go.mod h1:c0whqijPh/C+RwnXzAHFit01tdtf7gMeEHYSbICxJjU=
+github.com/iancoleman/orderedmap v0.0.0-20190318233801-ac98e3ecb4b0 h1:i462o439ZjprVSFSZLZxcsoAe592sZB1rci2Z8j4wdk=
+github.com/ianlancetaylor/demangle v0.0.0-20210905161508-09a460cdf81d h1:uGg2frlt3IcT7kbV6LEp5ONv4vmoO2FW4qSO+my/aoM=
+github.com/invopop/jsonschema v0.4.0 h1:Yuy/unfgCnfV5Wl7H0HgFufp/rlurqPOOuacqyByrws=
+github.com/invopop/jsonschema v0.7.0 h1:2vgQcBz1n256N+FpX3Jq7Y17AjYt46Ig3zIWyy770So=
+github.com/invopop/jsonschema v0.7.0/go.mod h1:O9uiLokuu0+MGFlyiaqtWxwqJm41/+8Nj0lD7A36YH0=
+github.com/jhump/gopoet v0.1.0 h1:gYjOPnzHd2nzB37xYQZxj4EIQNpBrBskRqQQ3q4ZgSg=
+github.com/jhump/goprotoc v0.5.0 h1:Y1UgUX+txUznfqcGdDef8ZOVlyQvnV0pKWZH08RmZuo=
+github.com/jhump/protoreflect v1.12.0 h1:1NQ4FpWMgn3by/n1X0fbeKEUxP1wBt7+Oitpv01HR10=
+github.com/jhump/protoreflect v1.14.1 h1:N88q7JkxTHWFEqReuTsYH1dPIwXxA0ITNQp7avLY10s=
+github.com/jhump/protoreflect v1.14.1/go.mod h1:JytZfP5d0r8pVNLZvai7U/MCuTWITgrI4tTg7puQFKI=
+github.com/json-iterator/go v1.1.11 h1:uVUAXhF2To8cbw/3xN3pxj6kk7TYKs98NIrTqPlMWAQ=
+github.com/juju/qthttptest v0.1.1 h1:JPju5P5CDMCy8jmBJV2wGLjDItUsx2KKL514EfOYueM=
+github.com/julienschmidt/httprouter v1.3.0 h1:U0609e9tgbseu3rBINet9P48AI/D3oJs4dN7jwJOQ1U=
+github.com/kr/pretty v0.3.0 h1:WgNl7dwNpEZ6jJ9k1snq4pZsg7DOEN8hP9Xw0Tsjwk0=
+github.com/kr/pty v1.1.1 h1:VkoXIwSboBpnk99O/KFauAEILuNHv5DVFKZMBN/gUgw=
+github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
+github.com/linkedin/goavro v2.1.0+incompatible h1:DV2aUlj2xZiuxQyvag8Dy7zjY69ENjS66bWkSfdpddY=
+github.com/linkedin/goavro/v2 v2.11.1 h1:4cuAtbDfqkKnBXp9E+tRkIJGa6W6iAjwonwt8O1f4U0=
+github.com/magiconair/properties v1.8.6 h1:5ibWZ6iY0NctNGWo87LalDlEZ6R41TqbbDamhfG/Qzo=
+github.com/magiconair/properties v1.8.6/go.mod h1:y3VJvCyxH9uVvJTWEGAELF3aiYNyPKd5NZ3oSwXrF60=
+github.com/moby/sys/mount v0.3.3 h1:fX1SVkXFJ47XWDoeFW4Sq7PdQJnV2QIDZAqjNqgEjUs=
+github.com/moby/sys/mount v0.3.3/go.mod h1:PBaEorSNTLG5t/+4EgukEQVlAvVEc6ZjTySwKdqp5K0=
+github.com/moby/sys/mountinfo v0.6.2 h1:BzJjoreD5BMFNmD9Rus6gdd1pLuecOFPt8wC+Vygl78=
+github.com/moby/sys/mountinfo v0.6.2/go.mod h1:IJb6JQeOklcdMU9F5xQ8ZALD+CUr5VlGpwtX+VE0rpI=
+github.com/moby/term v0.0.0-20210619224110-3f7ff695adc6 h1:dcztxKSvZ4Id8iPpHERQBbIJfabdt4wUm5qy3wOL2Zc=
+github.com/moby/term v0.0.0-20210619224110-3f7ff695adc6/go.mod h1:E2VnQOmVuvZB6UYnnDB0qG5Nq/1tD9acaOpo6xmt0Kw=
+github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=
+github.com/modern-go/reflect2 v1.0.1 h1:9f412s+6RmYXLWZSEzVVgPGK7C2PphHj5RJrvfx9AWI=
+github.com/morikuni/aec v1.0.0 h1:nP9CBfwrvYnBRgY6qfDQkygYDmYwOilePFkwzv4dU8A=
+github.com/morikuni/aec v1.0.0/go.mod h1:BbKIizmSmc5MMPqRYbxO4ZU0S0+P200+tUnFx7PXmsc=
+github.com/nrwiersma/avro-benchmarks v0.0.0-20210913175520-21aec48c8f76 h1:wDbc54qVQ+C5oQZ8Q5VlMbqEt2hrnev2bC/gIGL3Ksk=
+github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
+github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
+github.com/opencontainers/image-spec v1.0.3-0.20211202183452-c5a74bcca799 h1:rc3tiVYb5z54aKaDfakKn0dDjIyPpTtszkjuMzyt7ec=
+github.com/opencontainers/image-spec v1.0.3-0.20211202183452-c5a74bcca799/go.mod h1:BtxoFyWECRxE4U/7sNtV5W15zMzWCbyJoFRP3s7yZA0=
+github.com/opencontainers/runc v1.1.3 h1:vIXrkId+0/J2Ymu2m7VjGvbSlAId9XNRPhn2p4b+d8w=
+github.com/opencontainers/runc v1.1.3/go.mod h1:1J5XiS+vdZ3wCyZybsuxXZWGrgSr8fFJHLXuG2PsnNg=
+github.com/pkg/diff v0.0.0-20210226163009-20ebb0f2a09e h1:aoZm08cpOy4WuID//EZDgcC4zIxODThtZNPirFr42+A=
+github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
+github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/prometheus/client_model v0.0.0-20190812154241-14fe0d1b01d4 h1:gQz4mCbXsO+nc9n1hCxHcGA3Zx3Eo+UHZoInFGUIXNM=
+github.com/rogpeppe/clock v0.0.0-20190514195947-2896927a307a h1:3QH7VyOaaiUHNrA9Se4YQIRkDTCw1EJls9xTUCaCeRM=
+github.com/rogpeppe/fastuuid v1.2.0 h1:Ppwyp6VYCF1nvBTXL3trRso7mXMlRrw9ooo375wvi2s=
+github.com/rogpeppe/go-internal v1.8.0 h1:FCbCCtXNOY3UtUuHUYaghJg4y7Fd14rXifAYUAtL9R8=
+github.com/santhosh-tekuri/jsonschema/v5 v5.0.0 h1:TToq11gyfNlrMFZiYujSekIsPd9AmsA2Bj/iv+s4JHE=
+github.com/santhosh-tekuri/jsonschema/v5 v5.2.0 h1:WCcC4vZDS1tYNxjWlwRJZQy28r8CMoggKnxNzxsVDMQ=
+github.com/santhosh-tekuri/jsonschema/v5 v5.2.0/go.mod h1:FKdcjfQW6rpZSnxxUvEA5H/cDPdvJ/SZJQLWWXWGrZ0=
+github.com/sirupsen/logrus v1.8.1 h1:dJKuHgqk1NNQlqoA6BTlM1Wf9DOH3NBjQyu0h9+AZZE=
+github.com/sirupsen/logrus v1.8.1/go.mod h1:yWOB1SBYBC5VeMP7gHvWumXLIWorT60ONWic61uBYv0=
+github.com/stretchr/objx v0.1.0 h1:4G4v2dO3VZwixGIRoQ5Lfboy6nUhCyYzaqnIAPPhYs4=
+github.com/stretchr/testify v1.7.1 h1:5TQK59W5E3v0r2duFAb7P95B6hEeOyEnHRa8MjYSMTY=
+github.com/stretchr/testify v1.8.2 h1:+h33VjcLVPDHtOdpUCuF+7gSuG3yGIftsP1YvFihtJ8=
+github.com/stretchr/testify v1.8.2/go.mod h1:w2LPCIKwWwSfY2zedu0+kehJoqGctiVI29o6fzry7u4=
+github.com/testcontainers/testcontainers-go v0.14.0 h1:h0D5GaYG9mhOWr2qHdEKDXpkce/VlvaYOCzTRi6UBi8=
+github.com/testcontainers/testcontainers-go v0.14.0/go.mod h1:hSRGJ1G8Q5Bw2gXgPulJOLlEBaYJHeBSOkQM5JLG+JQ=
+github.com/yuin/goldmark v1.1.27 h1:nqDD4MMMQA0lmWq03Z2/myGPYLQoXtmi0rGVs95ntbo=
+go.opencensus.io v0.23.0 h1:gqCw0LfLxScz8irSi8exQc7fyQ0fKQU/qnC/X8+V/1M=
+go.opencensus.io v0.23.0/go.mod h1:XItmlyltB5F7CS4xOC1DcqMoFqwtC6OG2xF7mCv7P7E=
+go.opentelemetry.io/proto/otlp v0.7.0 h1:rwOQPCuKAKmwGKq2aVNnYIibI6wnV7EvzgfTCzcdGg8=
+golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9 h1:psW17arqaxU48Z5kZ0CQnkZWQJsqcURM6tKiBApRjXI=
+golang.org/x/exp v0.0.0-20190121172915-509febef88a4 h1:c2HOrn5iMezYjSlGPncknSEr/8x5LELb/ilJbXi9DEA=
+golang.org/x/lint v0.0.0-20190313153728-d0100b6bd8b3 h1:XQyxROzUlZH+WIQwySDgnISgOivlhjIEwaQaJEJrrN0=
+golang.org/x/mod v0.2.0 h1:KU7oHjnv3XNWfa5COkzUifxZmxp1TyI7ImMXqFxLwvQ=
+golang.org/x/net v0.8.0 h1:Zrh2ngAOFYneWTAIAPethzeaQLuHwhuBkuV6ZiRnUaQ=
+golang.org/x/net v0.8.0/go.mod h1:QVkue5JL9kW//ek3r6jTKnTFis1tRmNAW2P1shuFdJc=
+golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d h1:TzXSXBo42m9gQenoE3b9BGiEpg5IG2JkU5FkPIawgtw=
+golang.org/x/sync v0.0.0-20210220032951-036812b2e83c h1:5KslGYwFpkhGh+Q16bwMP3cOontH8FOep7tGV86Y7SQ=
+golang.org/x/sys v0.6.0 h1:MVltZSvRTcU2ljQOhs94SXPftV6DCNnZViHeQps87pQ=
+golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1 h1:v+OssWQX+hTHEmOBgwxdZxK4zHq3yOs8F9J7mk0PY8E=
+golang.org/x/tools v0.0.0-20200505023115-26f46d2f7ef8 h1:BMFHd4OFnFtWX46Xj4DN6vvT1btiBxyq+s0orYBqcQY=
+golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 h1:go1bK/D/BFZV2I8cIQd1NKEZ+0owSTG1fDTci4IqFcE=
+google.golang.org/appengine v1.4.0 h1:/wp5JvzpHIxhs/dumFmF7BXTf3Z+dd4uXta4kVyO508=
+google.golang.org/genproto v0.0.0-20220503193339-ba3ae3f07e29 h1:DJUvgAPiJWeMBiT+RzBVcJGQN7bAEWS5UEoMshES9xs=
+google.golang.org/genproto v0.0.0-20230331144136-dcfb400f0633 h1:0BOZf6qNozI3pkN3fJLwNubheHJYHhMh91GRFOWWK08=
+google.golang.org/genproto v0.0.0-20230331144136-dcfb400f0633/go.mod h1:UUQDJDOlWu4KYeJZffbWgBkS1YFobzKbLVfK69pe0Ak=
+google.golang.org/grpc v1.46.0 h1:oCjezcn6g6A75TGoKYBPgKmVBLexhYLM6MebdrPApP8=
+google.golang.org/grpc v1.54.0 h1:EhTqbhiYeixwWQtAEZAxmV9MGqcjEU2mFx52xCzNyag=
+google.golang.org/grpc v1.54.0/go.mod h1:PUSEXI6iWghWaB6lXM4knEgpJNu2qUcKfDtNci3EC2g=
+google.golang.org/protobuf v1.28.0 h1:w43yiav+6bVFTBQFZX0r7ipe9JQ1QsbMgHwbBziscLw=
+google.golang.org/protobuf v1.30.0 h1:kPPoIgf3TsEvrm0PFe15JQ+570QVxYzEvvHqChK+cng=
+google.golang.org/protobuf v1.30.0/go.mod h1:HV8QOd/L58Z+nl8r43ehVNZIU/HEI6OcFqwMG9pJV4I=
+gopkg.in/avro.v0 v0.0.0-20171217001914-a730b5802183 h1:PGIdqvwfpMUyUP+QAlAnKTSWQ671SmYjoou2/5j7HXk=
+gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 h1:YR8cESwS4TdDjEe65xsg0ogRM/Nc3DYOhEAlW+xobZo=
+gopkg.in/errgo.v1 v1.0.0 h1:n+7XfCyygBFb8sEjg6692xjC6Us50TFRO54+xYUEwjE=
+gopkg.in/errgo.v2 v2.1.0 h1:0vLT13EuvQ0hNvakwLuFZ/jYrLp5F3kcWHXdRggjCE8=
+gopkg.in/httprequest.v1 v1.2.1 h1:pEPLMdF/gjWHnKxLpuCYaHFjc8vAB2wrYjXrqDVC16E=
+gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22 h1:VpOs+IwYnYBaFnrNAeB8UUWtL3vEUnzSCL1nVjPhqrw=
+gopkg.in/retry.v1 v1.0.3 h1:a9CArYczAVv6Qs6VGoLMio99GEs7kY9UzSF9+LD+iGs=
+gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b h1:h8qDotaEPuJATrMmW04NCwg7v22aHH28wwpauUhK9Oo=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+honnef.co/go/tools v0.0.0-20190523083050-ea95bdfd59fc h1:/hemPrYIhOhy8zYrNj+069zDB68us2sMGsfkFJO0iZs=
+</file>
+
+<file path="README.md">
+# GoBuild
+
+GoBuild is a Vercel-like build pipeline system optimized for throughput, speed, and concurrency, built with Go and Docker Compose.
+
+## Architecture
+
+The system consists of six microservices:
+- API Gateway: Entry point for client requests
+- Build Orchestrator: Manages build jobs and scheduling
+- Builder: Executes build processes
+- Storage: Manages build artifacts and logs
+- Notification: Handles status updates and alerts
+- Status Dashboard: Provides UI for monitoring builds
+
+## Technologies
+
+- Backend: Go (Golang)
+- Frontend: React with shadcn/ui components
+- Message Queue: Apache Kafka
+- Caching: Redis
+- Containerization: Docker and Docker Compose
+
+## Getting Started
+
+### Prerequisites
+
+- Docker and Docker Compose
+- Git
+
+### Setup and Run
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/gobuild.git
+cd gobuild
+
+Start all services using Docker Compose:
+```
+</file>
+
+</files>

@@ -1,12 +1,14 @@
-FROM golang:1.21-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN go mod init storage && \
-    go mod tidy && \
-    go build -o storage .
+FROM gobuild-dependencies:latest AS builder
+WORKDIR /app/storage
+COPY storage/ .
+RUN go mod edit -replace gobuild/shared=/app/shared
+RUN go mod tidy
+RUN go build -o storage .
 
-FROM alpine:latest
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
-COPY --from=builder /app/storage .
+COPY --from=builder /app/storage/storage .
 EXPOSE 8083
 CMD ["./storage"]
