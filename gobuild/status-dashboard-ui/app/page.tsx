@@ -67,7 +67,7 @@ export default function Dashboard() {
   const fetchBuilds = async () => {
     try {
       const token = localStorage.getItem("authToken");
-      const response = await fetch("http://localhost:8085/api/builds", {
+      const response = await fetch("http://localhost:8086/api/builds", {
         headers: token ? {
           "Authorization": `Bearer ${token}`
         } : {}
@@ -86,7 +86,7 @@ export default function Dashboard() {
 
   // Set up WebSocket connection
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8084/ws?clientId=dashboard-ui&buildId=");
+    const ws = new WebSocket("ws://localhost:8085/ws?clientId=dashboard-ui&buildId=");
 
     ws.onopen = () => {
       console.log("WebSocket connection established");
@@ -188,7 +188,7 @@ export default function Dashboard() {
   const handleBuildSelect = async (build: BuildStatus) => {
     try {
       const token = localStorage.getItem("authToken");
-      const response = await fetch(`http://localhost:8085/api/builds/${build.id}`, {
+      const response = await fetch(`http://localhost:8086/api/builds/${build.id}`, {
         headers: token ? {
           "Authorization": `Bearer ${token}`
         } : {}
@@ -214,7 +214,7 @@ export default function Dashboard() {
         return;
       }
 
-      const response = await fetch("http://localhost:8080/api/builds", {
+      const response = await fetch("http://localhost:8081/api/builds", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -264,7 +264,7 @@ export default function Dashboard() {
   const handleLogin = async () => {
     try {
       setAuthError("");
-      const response = await fetch("http://localhost:8080/api/login", {
+      const response = await fetch("http://localhost:8081/api/login", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -300,7 +300,7 @@ export default function Dashboard() {
   const handleRegister = async () => {
     try {
       setAuthError("");
-      const response = await fetch("http://localhost:8080/api/register", {
+      const response = await fetch("http://localhost:8081/api/register", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -535,7 +535,7 @@ export default function Dashboard() {
                             <div className="mt-4">
                               <Button asChild>
 <a
-                                href={`http://localhost:8083${selectedBuild.artifact_url}`}
+                                href={`http://localhost:8084${selectedBuild.artifact_url}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 >

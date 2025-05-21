@@ -10,5 +10,5 @@ RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /
 
 WORKDIR /app
 COPY --from=builder /app/storage/storage .
-EXPOSE 8083
+EXPOSE 8084
 CMD ["./storage"]

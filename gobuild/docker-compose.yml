@@ -11,6 +11,8 @@ services:
     image: confluentinc/cp-zookeeper:latest
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: WARN
+      ZOOKEEPER_TOOLS_LOG4J_LOGLEVEL: ERROR
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "2181"]
       interval: 5s
@@ -32,6 +34,9 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_LOG4J_ROOT_LOGLEVEL: WARN
+      KAFKA_LOG4J_LOGGERS: "kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO"
+      KAFKA_TOOLS_LOG4J_LOGLEVEL: ERROR
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "9092"]
       interval: 5s
@@ -60,6 +65,7 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    command: redis-server --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -72,9 +78,9 @@ services:
       context: .
       dockerfile: api-gateway/Dockerfile
     ports:
-      - "8080:8080"
+      - "8081:8081"
     environment:
-      - PORT=8080
+      - PORT=8081
     depends_on:
       dependencies:
         condition: service_completed_successfully
@@ -90,9 +96,9 @@ services:
       context: .
       dockerfile: build-orchestrator/Dockerfile
     ports:
-      - "8081:8081"
+      - "8082:8082"
     environment:
-      - PORT=8081
+      - PORT=8082
     depends_on:
       dependencies:
         condition: service_completed_successfully
@@ -108,7 +114,7 @@ services:
       context: .
       dockerfile: builder/Dockerfile
     environment:
-      - PORT=8082
+      - PORT=8083
     depends_on:
       dependencies:
         condition: service_completed_successfully
@@ -127,9 +133,9 @@ services:
       context: .
       dockerfile: storage/Dockerfile
     ports:
-      - "8083:8083"
+      - "8084:8084"
     environment:
-      - PORT=8083
+      - PORT=8084
     volumes:
       - build-artifacts:/app/artifacts
     depends_on:
@@ -145,9 +151,9 @@ services:
       context: .
       dockerfile: notification/Dockerfile
     ports:
-      - "8084:8084"
+      - "8085:8085"
     environment:
-      - PORT=8084
+      - PORT=8085
     depends_on:
       dependencies:
         condition: service_completed_successfully
@@ -161,9 +167,9 @@ services:
       context: .
       dockerfile: status-dashboard-api/Dockerfile
     ports:
-      - "8085:8085"
+      - "8086:8086"
     environment:
-      - PORT=8085
+      - PORT=8086
     depends_on:
       dependencies:
         condition: service_completed_successfully

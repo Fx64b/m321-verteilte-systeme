@@ -31,8 +31,14 @@ The system consists of six microservices:
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/gobuild.git
+git clone https://github.com/fx64b/gobuild.git
 cd gobuild
-
-Start all services using Docker Compose:
+./build.sh
 ```
+
+Redpanda:
+```bash
+ docker run --network=host -e KAFKA_BROKERS=localhost:9092 -e SERVER_PORT=8089 docker.redpanda.com/redpandadata/console:latest
+```
+
+Then visit: http://[::1]:8080/overview

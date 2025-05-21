@@ -10,5 +10,5 @@ RUN apt-get update && apt-get install -y librdkafka1 ca-certificates && rm -rf /
 
 WORKDIR /app
 COPY --from=builder /app/api-gateway/api-gateway .
-EXPOSE 8080
+EXPOSE 8081
 CMD ["./api-gateway"]
