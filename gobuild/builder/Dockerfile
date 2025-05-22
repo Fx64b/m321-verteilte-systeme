@@ -6,7 +6,10 @@ RUN go mod tidy
 RUN go build -o builder .
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y librdkafka1 ca-certificates git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y librdkafka1 ca-certificates git nodejs npm && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g pnpm
+
 WORKDIR /app
 COPY --from=builder /app/builder/builder .
 EXPOSE 8083

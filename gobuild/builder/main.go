@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,14 +22,16 @@ type Builder struct {
 	id            string
 	workDir       string
 	kafkaProducer *kafka.Producer
+	storageURL    string
 }
 
 // NewBuilder creates a new Builder
-func NewBuilder(id, workDir string, kafkaProducer *kafka.Producer) *Builder {
+func NewBuilder(id, workDir, storageURL string, kafkaProducer *kafka.Producer) *Builder {
 	return &Builder{
 		id:            id,
 		workDir:       workDir,
 		kafkaProducer: kafkaProducer,
+		storageURL:    storageURL,
 	}
 }
 
@@ -41,12 +46,14 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	}
 	err := b.kafkaProducer.SendMessage("build-status", buildReq.ID, statusMsg)
 	if err != nil {
+		log.Printf("Failed to send status update: %v", err)
 		return err
 	}
 
 	buildDir := filepath.Join(b.workDir, buildReq.ID)
 	err = os.MkdirAll(buildDir, 0755)
 	if err != nil {
+		log.Printf("Failed to create build directory: %v", err)
 		return b.failBuild(buildReq.ID, fmt.Sprintf("Failed to create build directory: %v", err))
 	}
 
@@ -65,6 +72,7 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 			LogEntry:  fmt.Sprintf("Clone failed: %s\n%s", err.Error(), output),
 			Timestamp: time.Now(),
 		}
+		log.Printf("Clone failed: %s\n%s", err.Error(), output)
 		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
 		return b.failBuild(buildReq.ID, "Failed to clone repository")
 	}
@@ -103,7 +111,26 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 			}
 			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
 
-			npmInstallCmd := exec.Command("npm", "install")
+			packageManager := b.detectNodePackageManager(buildDir)
+
+			if packageManager == "unknown" {
+				logMsg := message.BuildLogMessage{
+					BuildID:   buildReq.ID,
+					LogEntry:  "No package manager found, defaulting to npm",
+					Timestamp: time.Now(),
+				}
+				b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+				packageManager = "npm"
+			} else {
+				logMsg := message.BuildLogMessage{
+					BuildID:   buildReq.ID,
+					LogEntry:  fmt.Sprintf("Using package manager: %s", packageManager),
+					Timestamp: time.Now(),
+				}
+				b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+			}
+
+			npmInstallCmd := exec.Command(packageManager, "install")
 			npmInstallCmd.Dir = buildDir
 			output, err := npmInstallCmd.CombinedOutput()
 			if err != nil {
@@ -116,7 +143,7 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 				return b.failBuild(buildReq.ID, "Failed to install dependencies")
 			}
 
-			npmBuildCmd := exec.Command("npm", "run", "build")
+			npmBuildCmd := exec.Command(packageManager, "run", "build")
 			npmBuildCmd.Dir = buildDir
 			output, err = npmBuildCmd.CombinedOutput()
 			if err != nil {
@@ -180,9 +207,9 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	}
 	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
 
-	// Create a tarball of the build artifacts
-	artifactPath := fmt.Sprintf("/app/artifacts/%s.tar.gz", buildReq.ID)
-	tarCmd := exec.Command("tar", "-czf", artifactPath, ".")
+	// Create a temporary artifact file
+	tempArtifactPath := filepath.Join(b.workDir, fmt.Sprintf("%s.tar.gz", buildReq.ID))
+	tarCmd := exec.Command("tar", "-czf", tempArtifactPath, ".")
 	tarCmd.Dir = buildDir
 	output, err = tarCmd.CombinedOutput()
 	if err != nil {
@@ -195,10 +222,42 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 		return b.failBuild(buildReq.ID, "Failed to create artifact")
 	}
 
+	// Upload artifact to storage service
+	logMsg = message.BuildLogMessage{
+		BuildID:   buildReq.ID,
+		LogEntry:  "Uploading artifact to storage...",
+		Timestamp: time.Now(),
+	}
+	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
+	err = b.uploadArtifact(buildReq.ID, tempArtifactPath)
+	if err != nil {
+		logMsg := message.BuildLogMessage{
+			BuildID:   buildReq.ID,
+			LogEntry:  fmt.Sprintf("Failed to upload artifact: %v", err),
+			Timestamp: time.Now(),
+		}
+		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		return b.failBuild(buildReq.ID, "Failed to upload artifact")
+	}
+
+	// Clean up temporary artifact
+	os.Remove(tempArtifactPath)
+
+	// Clean up build directory
+	os.RemoveAll(buildDir)
+
+	logMsg = message.BuildLogMessage{
+		BuildID:   buildReq.ID,
+		LogEntry:  "Artifact uploaded successfully",
+		Timestamp: time.Now(),
+	}
+	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+
 	completionMsg := message.BuildCompletionMessage{
 		BuildID:     buildReq.ID,
 		Status:      "success",
-		ArtifactURL: fmt.Sprintf("/artifacts/%s.tar.gz", buildReq.ID),
+		ArtifactURL: fmt.Sprintf("/artifacts/%s", buildReq.ID),
 		Duration:    time.Since(buildReq.CreatedAt).Milliseconds(),
 		CompletedAt: time.Now(),
 	}
@@ -214,6 +273,63 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 		UpdatedAt: time.Now(),
 	}
 	return b.kafkaProducer.SendMessage("build-status", buildReq.ID, statusMsg)
+}
+
+// uploadArtifact uploads the artifact to the storage service
+func (b *Builder) uploadArtifact(buildID, artifactPath string) error {
+	// Open the artifact file
+	file, err := os.Open(artifactPath)
+	if err != nil {
+		return fmt.Errorf("failed to open artifact file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a buffer to store our request body
+	var requestBody bytes.Buffer
+	writer := multipart.NewWriter(&requestBody)
+
+	// Create a form file field
+	part, err := writer.CreateFormFile("artifact", fmt.Sprintf("%s.tar.gz", buildID))
+	if err != nil {
+		return fmt.Errorf("failed to create form file: %v", err)
+	}
+
+	// Copy the file content to the form field
+	_, err = io.Copy(part, file)
+	if err != nil {
+		return fmt.Errorf("failed to copy file content: %v", err)
+	}
+
+	// Close the multipart writer
+	err = writer.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close multipart writer: %v", err)
+	}
+
+	// Create the HTTP request
+	url := fmt.Sprintf("%s/artifacts/%s", b.storageURL, buildID)
+	req, err := http.NewRequest("POST", url, &requestBody)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Set the content type header
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	// Send the request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to upload artifact: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("storage service returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // failBuild handles build failures
@@ -254,10 +370,31 @@ func (b *Builder) detectProjectType(dir string) string {
 	return "unknown"
 }
 
+func (b *Builder) detectNodePackageManager(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "pnpm-lock.yaml")); !os.IsNotExist(err) {
+		return "pnpm"
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "package-lock.json")); !os.IsNotExist(err) {
+		return "npm"
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "yarn.lock")); !os.IsNotExist(err) {
+		return "yarn"
+	}
+
+	return "unknown"
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8082"
+	}
+
+	storageURL := os.Getenv("STORAGE_URL")
+	if storageURL == "" {
+		storageURL = "http://storage:8084"
 	}
 
 	workDir := "/app/work"
@@ -283,7 +420,7 @@ func main() {
 		log.Fatalf("Failed to subscribe to topics: %v", err)
 	}
 
-	builder := NewBuilder(fmt.Sprintf("builder-%s", os.Getenv("HOSTNAME")), workDir, kafkaProducer)
+	builder := NewBuilder(fmt.Sprintf("builder-%s", os.Getenv("HOSTNAME")), workDir, storageURL, kafkaProducer)
 
 	go func() {
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
