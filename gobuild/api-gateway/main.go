@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/google/uuid"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -66,16 +68,18 @@ func main() {
 		port = "8080"
 	}
 
-	// Initialize Redis client
+	buildOrchestratorURL := os.Getenv("BUILD_ORCHESTRATOR_URL")
+	if buildOrchestratorURL == "" {
+		buildOrchestratorURL = "http://build-orchestrator:8082"
+	}
+
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: "redis:6379",
 	})
 	defer redisClient.Close()
 
-	// Initialize user store
 	userStore := users.NewUserStore(redisClient)
 
-	// Initialize Kafka producer
 	kafkaProducer, err := kafka.NewProducer("kafka:29092")
 	if err != nil {
 		log.Fatalf("Failed to create Kafka producer: %v", err)
@@ -84,10 +88,8 @@ func main() {
 
 	r := mux.NewRouter()
 
-	// Add CORS middleware
 	r.Use(corsMiddleware)
 
-	// Specifically handle OPTIONS requests at the router level
 	r.Methods("OPTIONS").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
@@ -95,10 +97,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Auth middleware after CORS
 	r.Use(auth.AuthMiddleware)
 
-	// Register endpoint
 	r.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
 		var regReq RegisterRequest
 		if err := json.NewDecoder(r.Body).Decode(&regReq); err != nil {
@@ -111,17 +111,15 @@ func main() {
 			return
 		}
 
-		// Create a new user
 		user := &users.User{
 			ID:        uuid.New().String(),
 			Email:     regReq.Email,
-			Password:  regReq.Password, // This will be hashed in Create method
-			Role:      "user",          // Default role
+			Password:  regReq.Password,
+			Role:      "user",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
 
-		// Store the user
 		err := userStore.Create(context.Background(), user)
 		if err != nil {
 			if err == users.ErrUserAlreadyExists {
@@ -133,14 +131,12 @@ func main() {
 			return
 		}
 
-		// Generate a token for the user
 		token, err := auth.GenerateToken(user.ID, user.Email, user.Role)
 		if err != nil {
 			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 			return
 		}
 
-		// Prepare response
 		resp := LoginResponse{
 			Token: token,
 		}
@@ -152,7 +148,6 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	}).Methods("POST")
 
-	// Login endpoint
 	r.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
 		var loginReq LoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&loginReq); err != nil {
@@ -165,7 +160,6 @@ func main() {
 			return
 		}
 
-		// Authenticate the user
 		user, err := userStore.Authenticate(context.Background(), loginReq.Email, loginReq.Password)
 		if err != nil {
 			if err == users.ErrUserNotFound || err == users.ErrInvalidCredentials {
@@ -177,14 +171,12 @@ func main() {
 			return
 		}
 
-		// Generate a token for the user
 		token, err := auth.GenerateToken(user.ID, user.Email, user.Role)
 		if err != nil {
 			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 			return
 		}
 
-		// Prepare response
 		resp := LoginResponse{
 			Token: token,
 		}
@@ -196,7 +188,6 @@ func main() {
 		json.NewEncoder(w).Encode(resp)
 	}).Methods("POST")
 
-	// Build submission endpoint
 	r.HandleFunc("/api/builds", func(w http.ResponseWriter, r *http.Request) {
 		userClaims, ok := auth.UserClaimsFromContext(r.Context())
 		if !ok {
@@ -239,24 +230,46 @@ func main() {
 		})
 	}).Methods("POST")
 
-	// Get build status endpoint
 	r.HandleFunc("/api/builds/{buildId}", func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		buildID := vars["buildId"]
 
-		// TODO
-		// In a real implementation, you would retrieve the build status from a database or Redis
-		// For simplicity, we're just returning a mock response
+		url := fmt.Sprintf("%s/api/builds/%s", buildOrchestratorURL, buildID)
+
+		client := &http.Client{
+			Timeout: 5 * time.Second,
+		}
+
+		resp, err := client.Get(url)
+		if err != nil {
+			log.Printf("Failed to fetch build status from orchestrator: %v", err)
+			http.Error(w, "Failed to fetch build status", http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			http.Error(w, "Build not found", http.StatusNotFound)
+			return
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			http.Error(w, string(body), resp.StatusCode)
+			return
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("Failed to read response body: %v", err)
+			http.Error(w, "Failed to read build status", http.StatusInternalServerError)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":             buildID,
-			"status":         "queued",
-			"repository_url": "https://github.com/example/repo",
-			"created_at":     time.Now().Add(-5 * time.Minute),
-		})
+		w.Write(body)
 	}).Methods("GET")
 
-	// Health check endpoint
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

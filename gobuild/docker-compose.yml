@@ -81,6 +81,7 @@ services:
       - "8081:8081"
     environment:
       - PORT=8081
+      - BUILD_ORCHESTRATOR_URL=http://build-orchestrator:8082
     depends_on:
       dependencies:
         condition: service_completed_successfully
