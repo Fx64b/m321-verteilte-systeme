@@ -201,7 +201,8 @@ func main() {
 
 			var completionMsg message.BuildCompletionMessage
 			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" && completionMsg.Status != "" {
-				log.Printf("Received completion message for build: %s - Status: %s", completionMsg.BuildID, completionMsg.Status)
+				log.Printf("✅ Received completion message for build: %s - Status: %s - ArtifactURL: %s",
+					completionMsg.BuildID, completionMsg.Status, completionMsg.ArtifactURL)
 				notificationService.BroadcastBuildCompletion(completionMsg)
 				return nil
 			}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -30,15 +31,20 @@ func (s *StorageService) GetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	artifactPath := filepath.Join(s.artifactsDir, fmt.Sprintf("%s.tar.gz", buildID))
-
-	if _, err := os.Stat(artifactPath); os.IsNotExist(err) {
+	// Look for any file that starts with the buildID
+	pattern := filepath.Join(s.artifactsDir, fmt.Sprintf("%s*.tar.gz", buildID))
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
 		http.Error(w, "Artifact not found", http.StatusNotFound)
 		return
 	}
 
+	// Use the first (and should be only) match
+	artifactPath := matches[0]
+	filename := filepath.Base(artifactPath)
+
 	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.tar.gz", buildID))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 
 	http.ServeFile(w, r, artifactPath)
 }
@@ -65,7 +71,10 @@ func (s *StorageService) UploadArtifact(w http.ResponseWriter, r *http.Request) 
 	}
 	defer file.Close()
 
-	artifactPath := filepath.Join(s.artifactsDir, fmt.Sprintf("%s.tar.gz", buildID))
+	// Add timestamp to ensure uniqueness
+	timestamp := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("%s-%s.tar.gz", buildID, timestamp)
+	artifactPath := filepath.Join(s.artifactsDir, filename)
 
 	dst, err := os.Create(artifactPath)
 	if err != nil {
@@ -81,7 +90,7 @@ func (s *StorageService) UploadArtifact(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Artifact uploaded successfully")
+	log.Printf("✅ Successfully uploaded artifact: %s", filename)
 }
 
 func main() {

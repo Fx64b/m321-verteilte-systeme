@@ -155,19 +155,6 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 
 	b.sendLogLines(buildReq.ID, "Build completed successfully!")
 
-	// Send completion message
-	completionMsg := message.BuildCompletionMessage{
-		BuildID:     buildReq.ID,
-		Status:      "success",
-		ArtifactURL: fmt.Sprintf("/artifacts/%s", buildReq.ID),
-		Duration:    time.Since(buildReq.CreatedAt).Milliseconds(),
-		CompletedAt: time.Now(),
-	}
-	err = b.kafkaProducer.SendMessage("build-completions", buildReq.ID, completionMsg)
-	if err != nil {
-		return err
-	}
-
 	statusMsg = message.BuildStatusMessage{
 		BuildID:   buildReq.ID,
 		Status:    "completed",
@@ -336,8 +323,9 @@ func (b *Builder) createAndUploadArtifact(buildReq message.BuildRequestMessage, 
 	}
 	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
 
-	// Create a temporary artifact file
-	tempArtifactPath := filepath.Join(b.workDir, fmt.Sprintf("%s.tar.gz", buildReq.ID))
+	// Create a temporary artifact file with unique name
+	timestamp := time.Now().Format("20060102-150405")
+	tempArtifactPath := filepath.Join(b.workDir, fmt.Sprintf("%s-%s.tar.gz", buildReq.ID, timestamp))
 
 	tarCmd := exec.Command("tar", "-czf", tempArtifactPath, ".")
 	tarCmd.Dir = buildDir
@@ -368,7 +356,7 @@ func (b *Builder) createAndUploadArtifact(buildReq message.BuildRequestMessage, 
 	}
 	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
 
-	if err := b.uploadArtifact(buildReq.ID, tempArtifactPath); err != nil {
+	if err := b.uploadArtifact(buildReq.ID, tempArtifactPath, buildReq.CreatedAt); err != nil {
 		logMsg := message.BuildLogMessage{
 			BuildID:   buildReq.ID,
 			LogEntry:  fmt.Sprintf("Failed to upload artifact: %v", err),
@@ -389,7 +377,7 @@ func (b *Builder) createAndUploadArtifact(buildReq message.BuildRequestMessage, 
 }
 
 // uploadArtifact uploads the artifact to the storage service
-func (b *Builder) uploadArtifact(buildID, artifactPath string) error {
+func (b *Builder) uploadArtifact(buildID, artifactPath string, startTime time.Time) error {
 	log.Printf("📦 Uploading artifact %s to storage service...", artifactPath)
 	// Open the artifact file
 	file, err := os.Open(artifactPath)
@@ -449,6 +437,7 @@ func (b *Builder) uploadArtifact(buildID, artifactPath string) error {
 			BuildID:     buildID,
 			Status:      "success",
 			ArtifactURL: artifactURL,
+			Duration:    time.Since(startTime).Milliseconds(),
 			CompletedAt: time.Now(),
 		}
 
@@ -459,7 +448,6 @@ func (b *Builder) uploadArtifact(buildID, artifactPath string) error {
 			log.Printf("📤 Sent build completion message for build %s", buildID)
 		}
 
-		log.Printf("✅ Artifact uploaded successfully to %s", url)
 		return nil
 	}
 }

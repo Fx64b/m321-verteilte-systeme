@@ -110,27 +110,32 @@ func (bo *BuildOrchestrator) ProcessBuildStatus(statusMsg message.BuildStatusMes
 func (bo *BuildOrchestrator) ProcessBuildCompletion(completionMsg message.BuildCompletionMessage) error {
 	log.Printf("🏁 Processing build completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
 
-	// Get existing build
 	buildStatus, err := bo.getBuildStatus(completionMsg.BuildID)
 	if err != nil {
 		log.Printf("❌ Failed to get build status: %v", err)
 		return err
 	}
 
-	// Update fields
 	buildStatus.Status = completionMsg.Status
 	buildStatus.ArtifactURL = completionMsg.ArtifactURL
 	buildStatus.UpdatedAt = completionMsg.CompletedAt
 	buildStatus.CompletedAt = &completionMsg.CompletedAt
 	buildStatus.Duration = completionMsg.Duration
 
-	// Store updated status
 	if err := bo.storeBuildStatus(buildStatus); err != nil {
-		log.Printf("❌ Failed to update build completion: %v", err)
+		log.Printf("❌ Failed to store updated build status: %v", err)
 		return err
 	}
 
-	return nil
+	// Send status update
+	statusUpdate := message.BuildStatusMessage{
+		BuildID:   completionMsg.BuildID,
+		Status:    completionMsg.Status,
+		Message:   fmt.Sprintf("Build %s", completionMsg.Status),
+		UpdatedAt: completionMsg.CompletedAt,
+	}
+
+	return bo.kafkaProducer.SendMessage("build-status", completionMsg.BuildID, statusUpdate)
 }
 
 // storeBuildStatus stores build status in Redis with proper locking
