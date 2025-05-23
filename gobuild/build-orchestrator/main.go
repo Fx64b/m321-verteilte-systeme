@@ -81,10 +81,34 @@ func (bo *BuildOrchestrator) ProcessBuildRequest(buildReq message.BuildRequestMe
 
 	log.Printf("✅ Stored job %s in Redis", job.ID)
 
+	// Also store initial build info for status-dashboard-api
+	buildStatus := map[string]interface{}{
+		"id":             job.ID,
+		"repository_url": job.RepositoryURL,
+		"branch":         job.Branch,
+		"commit_hash":    job.CommitHash,
+		"status":         job.Status,
+		"message":        "Build queued",
+		"created_at":     job.CreatedAt,
+		"updated_at":     job.UpdatedAt,
+	}
+
+	buildStatusJSON, err := json.Marshal(buildStatus)
+	if err != nil {
+		log.Printf("❌ Failed to marshal build status: %v", err)
+		return err
+	}
+
+	// Store in the same format that status-dashboard-api expects
+	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:status:%s", job.ID), buildStatusJSON, 24*time.Hour).Err()
+	if err != nil {
+		log.Printf("❌ Failed to store build status: %v", err)
+	}
+
 	// Send a status update
 	statusMsg := message.BuildStatusMessage{
 		BuildID:   job.ID,
-		Status:    "queued",
+		Status:    job.Status,
 		Message:   "Build queued for processing",
 		UpdatedAt: job.UpdatedAt,
 	}

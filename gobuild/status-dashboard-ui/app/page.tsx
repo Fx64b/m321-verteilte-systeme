@@ -186,25 +186,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Handle build selection
-  const handleBuildSelect = async (build: BuildStatus) => {
-    try {
-      const token = localStorage.getItem("authToken");
-      const response = await fetch(`http://localhost:8086/api/builds/${build.id}`, {
-        headers: token ? {
-          "Authorization": `Bearer ${token}`
-        } : {}
-      });
-      if (!response.ok) {
-        throw new Error("Failed to fetch build details");
-      }
-      const data = await response.json();
-      setSelectedBuild(data);
-    } catch (error) {
-      console.error("Error fetching build details:", error);
-    }
-  };
-
 // Update the handleSubmitBuild function
   const handleSubmitBuild = async () => {
     if (!repositoryUrl) return;
@@ -474,8 +455,8 @@ export default function Dashboard() {
                       {builds.map((build) => (
                           <Card
                               key={build.id}
-                              className={`cursor-pointer ${selectedBuild?.id === build.id ? 'border-blue-500' : ''}`}
-                              onClick={() => handleBuildSelect(build)}
+                              className={`cursor-pointer hover:border-blue-400 transition-colors`}
+                              onClick={() => router.push(`/builds/${build.id}`)}
                           >
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                               <CardTitle className="text-sm font-medium">
