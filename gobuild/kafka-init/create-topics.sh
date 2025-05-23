@@ -10,6 +10,7 @@ echo "Kafka is ready!"
 # List of topics to create
 TOPICS=(
   "build-requests"
+  "build-jobs"
   "build-status"
   "build-logs"
   "build-completions"

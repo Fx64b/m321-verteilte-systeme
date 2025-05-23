@@ -1,15 +1,14 @@
 package main
 
 import (
-	"log"
-	"net/http"
-	"os"
-	"sync"
-
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"gobuild/shared/kafka"
 	"gobuild/shared/message"
+	"log"
+	"net/http"
+	"os"
+	"sync"
 )
 
 type WebSocketClient struct {
@@ -17,7 +16,6 @@ type WebSocketClient struct {
 	buildID  string
 	clientID string
 }
-
 type NotificationService struct {
 	clients      map[string]*WebSocketClient
 	clientsMutex sync.RWMutex
@@ -34,7 +32,6 @@ func NewNotificationService() *NotificationService {
 		},
 	}
 }
-
 func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Upgrade the HTTP connection to a WebSocket connection
 	conn, err := ns.upgrader.Upgrade(w, r, nil)
@@ -46,15 +43,15 @@ func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Re
 	buildID := r.URL.Query().Get("buildId")
 	clientID := r.URL.Query().Get("clientId")
 
-	if buildID == "" || clientID == "" {
-		log.Printf("Missing buildId or clientId")
+	if clientID == "" {
+		log.Printf("Missing clientId")
 		conn.Close()
 		return
 	}
 
 	client := &WebSocketClient{
 		conn:     conn,
-		buildID:  buildID,
+		buildID:  buildID, // Can be empty to receive all build updates
 		clientID: clientID,
 	}
 
@@ -73,11 +70,19 @@ func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Re
 		log.Printf("Client disconnected: %s", clientID)
 	}()
 
-	// Keep the connection alive
+	// Keep the connection alive and handle ping/pong
 	for {
-		_, _, err := conn.ReadMessage()
+		messageType, message, err := conn.ReadMessage()
 		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("WebSocket error: %v", err)
+			}
 			break
+		}
+
+		// Handle ping messages
+		if messageType == websocket.PingMessage {
+			conn.WriteMessage(websocket.PongMessage, message)
 		}
 	}
 }
@@ -87,17 +92,26 @@ func (ns *NotificationService) BroadcastBuildStatus(statusMsg message.BuildStatu
 	ns.clientsMutex.RLock()
 	defer ns.clientsMutex.RUnlock()
 
-	for _, client := range ns.clients {
-		if client.buildID == statusMsg.BuildID || client.buildID == "" {
-			client.conn.WriteJSON(map[string]interface{}{
-				"type":    "status",
-				"buildId": statusMsg.BuildID,
-				"status":  statusMsg.Status,
-				"message": statusMsg.Message,
-				"time":    statusMsg.UpdatedAt,
-			})
+	message := map[string]interface{}{
+		"type":    "status",
+		"buildId": statusMsg.BuildID,
+		"status":  statusMsg.Status,
+		"message": statusMsg.Message,
+		"time":    statusMsg.UpdatedAt,
+	}
+
+	for clientID, client := range ns.clients {
+		// Send to clients that are interested in this build or all builds
+		if client.buildID == "" || client.buildID == statusMsg.BuildID {
+			err := client.conn.WriteJSON(message)
+			if err != nil {
+				log.Printf("Failed to send message to client %s: %v", clientID, err)
+				// Client will be cleaned up by the connection handler
+			}
 		}
 	}
+
+	log.Printf("Broadcasted status update for build %s to %d clients", statusMsg.BuildID, len(ns.clients))
 }
 
 // BroadcastBuildLog broadcasts a build log entry to all connected clients
@@ -105,40 +119,58 @@ func (ns *NotificationService) BroadcastBuildLog(logMsg message.BuildLogMessage)
 	ns.clientsMutex.RLock()
 	defer ns.clientsMutex.RUnlock()
 
-	for _, client := range ns.clients {
-		if client.buildID == logMsg.BuildID || client.buildID == "" {
-			client.conn.WriteJSON(map[string]interface{}{
-				"type":    "log",
-				"buildId": logMsg.BuildID,
-				"log":     logMsg.LogEntry,
-				"time":    logMsg.Timestamp,
-			})
+	message := map[string]interface{}{
+		"type":    "log",
+		"buildId": logMsg.BuildID,
+		"log":     logMsg.LogEntry,
+		"time":    logMsg.Timestamp,
+	}
+
+	for clientID, client := range ns.clients {
+		// Send to clients that are interested in this build or all builds
+		if client.buildID == "" || client.buildID == logMsg.BuildID {
+			err := client.conn.WriteJSON(message)
+			if err != nil {
+				log.Printf("Failed to send message to client %s: %v", clientID, err)
+				// Client will be cleaned up by the connection handler
+			}
 		}
 	}
+
+	log.Printf("Broadcasted log entry for build %s to %d clients", logMsg.BuildID, len(ns.clients))
 }
 
 func (ns *NotificationService) BroadcastBuildCompletion(completionMsg message.BuildCompletionMessage) {
 	ns.clientsMutex.RLock()
 	defer ns.clientsMutex.RUnlock()
 
-	for _, client := range ns.clients {
-		if client.buildID == completionMsg.BuildID || client.buildID == "" {
-			client.conn.WriteJSON(map[string]interface{}{
-				"type":        "completion",
-				"buildId":     completionMsg.BuildID,
-				"status":      completionMsg.Status,
-				"artifactUrl": completionMsg.ArtifactURL,
-				"duration":    completionMsg.Duration,
-				"time":        completionMsg.CompletedAt,
-			})
+	message := map[string]interface{}{
+		"type":        "completion",
+		"buildId":     completionMsg.BuildID,
+		"status":      completionMsg.Status,
+		"artifactUrl": completionMsg.ArtifactURL,
+		"duration":    completionMsg.Duration,
+		"time":        completionMsg.CompletedAt,
+	}
+
+	for clientID, client := range ns.clients {
+		// Send to clients that are interested in this build or all builds
+		if client.buildID == "" || client.buildID == completionMsg.BuildID {
+			err := client.conn.WriteJSON(message)
+			if err != nil {
+				log.Printf("Failed to send message to client %s: %v", clientID, err)
+				// Client will be cleaned up by the connection handler
+			}
 		}
 	}
+
+	log.Printf("Broadcasted completion for build %s to %d clients", completionMsg.BuildID, len(ns.clients))
 }
 
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8084"
+		port = "8085"
 	}
 
 	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "notification")
@@ -157,29 +189,29 @@ func main() {
 
 	go func() {
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
-			topic := string(key)
-
-			switch topic {
-			case "build-status":
-				var statusMsg message.BuildStatusMessage
-				if err := kafka.UnmarshalMessage(value, &statusMsg); err != nil {
-					return err
-				}
+			// Try to unmarshal as different message types
+			var statusMsg message.BuildStatusMessage
+			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
+				log.Printf("Received status message for build: %s", statusMsg.BuildID)
 				notificationService.BroadcastBuildStatus(statusMsg)
-			case "build-logs":
-				var logMsg message.BuildLogMessage
-				if err := kafka.UnmarshalMessage(value, &logMsg); err != nil {
-					return err
-				}
-				notificationService.BroadcastBuildLog(logMsg)
-			case "build-completions":
-				var completionMsg message.BuildCompletionMessage
-				if err := kafka.UnmarshalMessage(value, &completionMsg); err != nil {
-					return err
-				}
-				notificationService.BroadcastBuildCompletion(completionMsg)
+				return nil
 			}
 
+			var logMsg message.BuildLogMessage
+			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" {
+				log.Printf("Received log message for build: %s", logMsg.BuildID)
+				notificationService.BroadcastBuildLog(logMsg)
+				return nil
+			}
+
+			var completionMsg message.BuildCompletionMessage
+			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
+				log.Printf("Received completion message for build: %s", completionMsg.BuildID)
+				notificationService.BroadcastBuildCompletion(completionMsg)
+				return nil
+			}
+
+			log.Printf("Unknown message type received")
 			return nil
 		})
 	}()

@@ -45,6 +45,7 @@ func (api *StatusDashboardAPI) GetBuilds(w http.ResponseWriter, r *http.Request)
 
 	keys, err := api.redisClient.Keys(ctx, "build:*").Result()
 	if err != nil {
+		log.Printf("Failed to retrieve builds from Redis: %v", err)
 		http.Error(w, "Failed to retrieve builds", http.StatusInternalServerError)
 		return
 	}
@@ -68,39 +69,14 @@ func (api *StatusDashboardAPI) GetBuilds(w http.ResponseWriter, r *http.Request)
 		builds = append(builds, &build)
 	}
 
-	// TODO: remove in the future
-	// If no builds found in Redis, use the mock data
-	if len(builds) == 0 {
-		builds = append(builds,
-			&BuildStatus{
-				ID:            "build-123",
-				RepositoryURL: "https://github.com/example/repo",
-				Status:        "completed",
-				Message:       "Build completed successfully",
-				CreatedAt:     time.Now().Add(-30 * time.Minute),
-				UpdatedAt:     time.Now().Add(-25 * time.Minute),
-				ArtifactURL:   "/artifacts/build-123.tar.gz",
-				Logs:          []string{"Build completed successfully"},
-			},
-			&BuildStatus{
-				ID:            "build-124",
-				RepositoryURL: "https://github.com/example/repo",
-				Status:        "in-progress",
-				Message:       "Installing dependencies...",
-				CreatedAt:     time.Now().Add(-10 * time.Minute),
-				UpdatedAt:     time.Now().Add(-5 * time.Minute),
-				Logs:          []string{"Cloning repository...", "Installing dependencies..."},
-			},
-			&BuildStatus{
-				ID:            "build-125",
-				RepositoryURL: "https://github.com/example/repo",
-				Status:        "failed",
-				Message:       "Build failed: compilation error",
-				CreatedAt:     time.Now().Add(-20 * time.Minute),
-				UpdatedAt:     time.Now().Add(-18 * time.Minute),
-				Logs:          []string{"Cloning repository...", "Build failed: compilation error"},
-			},
-		)
+	// Sort builds by creation time (newest first)
+	// Simple bubble sort for demonstration
+	for i := 0; i < len(builds)-1; i++ {
+		for j := 0; j < len(builds)-i-1; j++ {
+			if builds[j].CreatedAt.Before(builds[j+1].CreatedAt) {
+				builds[j], builds[j+1] = builds[j+1], builds[j]
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -116,49 +92,10 @@ func (api *StatusDashboardAPI) GetBuild(w http.ResponseWriter, r *http.Request) 
 	buildJSON, err := api.redisClient.Get(ctx, "build:"+buildID).Result()
 	if err != nil {
 		if err == redis.Nil {
-			// TODO: remove in the future
-			// If build not found in Redis, check our mock data
-			if buildID == "build-123" {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(BuildStatus{
-					ID:            "build-123",
-					RepositoryURL: "https://github.com/example/repo",
-					Status:        "completed",
-					Message:       "Build completed successfully",
-					CreatedAt:     time.Now().Add(-30 * time.Minute),
-					UpdatedAt:     time.Now().Add(-25 * time.Minute),
-					ArtifactURL:   "/artifacts/build-123.tar.gz",
-					Logs:          []string{"Build completed successfully"},
-				})
-				return
-			} else if buildID == "build-124" {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(BuildStatus{
-					ID:            "build-124",
-					RepositoryURL: "https://github.com/example/repo",
-					Status:        "in-progress",
-					Message:       "Installing dependencies...",
-					CreatedAt:     time.Now().Add(-10 * time.Minute),
-					UpdatedAt:     time.Now().Add(-5 * time.Minute),
-					Logs:          []string{"Cloning repository...", "Installing dependencies..."},
-				})
-				return
-			} else if buildID == "build-125" {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(BuildStatus{
-					ID:            "build-125",
-					RepositoryURL: "https://github.com/example/repo",
-					Status:        "failed",
-					Message:       "Build failed: compilation error",
-					CreatedAt:     time.Now().Add(-20 * time.Minute),
-					UpdatedAt:     time.Now().Add(-18 * time.Minute),
-					Logs:          []string{"Cloning repository...", "Build failed: compilation error"},
-				})
-				return
-			}
 			http.Error(w, "Build not found", http.StatusNotFound)
 			return
 		}
+		log.Printf("Failed to retrieve build %s: %v", buildID, err)
 		http.Error(w, "Failed to retrieve build", http.StatusInternalServerError)
 		return
 	}
@@ -166,13 +103,16 @@ func (api *StatusDashboardAPI) GetBuild(w http.ResponseWriter, r *http.Request) 
 	var build BuildStatus
 	err = json.Unmarshal([]byte(buildJSON), &build)
 	if err != nil {
+		log.Printf("Failed to parse build data for %s: %v", buildID, err)
 		http.Error(w, "Failed to parse build data", http.StatusInternalServerError)
 		return
 	}
 
+	// Get logs for this build
 	logs, err := api.redisClient.LRange(ctx, "logs:"+buildID, 0, -1).Result()
 	if err != nil && err != redis.Nil {
 		log.Printf("Failed to get logs for build %s: %v", buildID, err)
+		// Don't fail the request if logs can't be retrieved
 	}
 	build.Logs = logs
 
@@ -219,13 +159,14 @@ func (api *StatusDashboardAPI) ProcessBuildStatus(statusMsg message.BuildStatusM
 		log.Printf("Failed to marshal build %s: %v", statusMsg.BuildID, err)
 		return
 	}
-	buildJSON = string(buildJSONBytes)
 
-	err = api.redisClient.Set(ctx, "build:"+statusMsg.BuildID, buildJSON, 24*time.Hour).Err()
+	err = api.redisClient.Set(ctx, "build:"+statusMsg.BuildID, buildJSONBytes, 24*time.Hour).Err()
 	if err != nil {
 		log.Printf("Failed to save build %s: %v", statusMsg.BuildID, err)
 		return
 	}
+
+	log.Printf("Updated build status: %s - %s", statusMsg.BuildID, statusMsg.Status)
 }
 
 func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
@@ -242,6 +183,8 @@ func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
 		log.Printf("Failed to set expiry for logs of build %s: %v", logMsg.BuildID, err)
 		return
 	}
+
+	log.Printf("Saved log entry for build: %s", logMsg.BuildID)
 }
 
 // ProcessBuildCompletion processes a build completion message
@@ -270,13 +213,14 @@ func (api *StatusDashboardAPI) ProcessBuildCompletion(completionMsg message.Buil
 		log.Printf("Failed to marshal build %s: %v", completionMsg.BuildID, err)
 		return
 	}
-	buildJSON = string(buildJSONBytes)
 
-	err = api.redisClient.Set(ctx, "build:"+completionMsg.BuildID, buildJSON, 24*time.Hour).Err()
+	err = api.redisClient.Set(ctx, "build:"+completionMsg.BuildID, buildJSONBytes, 24*time.Hour).Err()
 	if err != nil {
 		log.Printf("Failed to save build %s: %v", completionMsg.BuildID, err)
 		return
 	}
+
+	log.Printf("Updated build completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -284,6 +228,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -295,7 +240,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8085"
+		port = "8086"
 	}
 
 	redisClient := redis.NewClient(&redis.Options{
@@ -318,49 +263,53 @@ func main() {
 
 	go func() {
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
-			topic := string(key)
-
-			switch topic {
-			case "build-status":
-				var statusMsg message.BuildStatusMessage
-				if err := kafka.UnmarshalMessage(value, &statusMsg); err != nil {
-					return err
-				}
+			// Try to unmarshal as different message types
+			var statusMsg message.BuildStatusMessage
+			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
+				log.Printf("Received status message for build: %s", statusMsg.BuildID)
 				api.ProcessBuildStatus(statusMsg)
-			case "build-logs":
-				var logMsg message.BuildLogMessage
-				if err := kafka.UnmarshalMessage(value, &logMsg); err != nil {
-					return err
-				}
-				api.ProcessBuildLog(logMsg)
-			case "build-completions":
-				var completionMsg message.BuildCompletionMessage
-				if err := kafka.UnmarshalMessage(value, &completionMsg); err != nil {
-					return err
-				}
-				api.ProcessBuildCompletion(completionMsg)
+				return nil
 			}
 
+			var logMsg message.BuildLogMessage
+			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" {
+				log.Printf("Received log message for build: %s", logMsg.BuildID)
+				api.ProcessBuildLog(logMsg)
+				return nil
+			}
+
+			var completionMsg message.BuildCompletionMessage
+			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
+				log.Printf("Received completion message for build: %s", completionMsg.BuildID)
+				api.ProcessBuildCompletion(completionMsg)
+				return nil
+			}
+
+			log.Printf("Unknown message type received")
 			return nil
 		})
 	}()
 
 	r := mux.NewRouter()
 
-	// Add the CORS middleware right after it
+	// Add CORS middleware to all routes
 	r.Use(corsMiddleware)
 
-	r.HandleFunc("/api/builds", api.GetBuilds).Methods("GET")
+	// Handle OPTIONS for all routes
+	r.Methods("OPTIONS").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
 
+	r.HandleFunc("/api/builds", api.GetBuilds).Methods("GET")
 	r.HandleFunc("/api/builds/{buildId}", api.GetBuild).Methods("GET")
 
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Wrap handlers with CORS middleware
-	handler := corsMiddleware(r)
-
 	log.Printf("Status Dashboard API is running on port %s...", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	log.Fatal(http.ListenAndServe(":"+port, r))
 }
