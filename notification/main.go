@@ -59,7 +59,7 @@ func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Re
 	ns.clients[clientID] = client
 	ns.clientsMutex.Unlock()
 
-	log.Printf("Client connected: %s for build %s", clientID, buildID)
+	// log.Printf("Client connected: %s for build %s", clientID, buildID)
 
 	// Handle disconnection
 	defer func() {
@@ -67,7 +67,7 @@ func (ns *NotificationService) HandleWebSocket(w http.ResponseWriter, r *http.Re
 		delete(ns.clients, clientID)
 		ns.clientsMutex.Unlock()
 		conn.Close()
-		log.Printf("Client disconnected: %s", clientID)
+		// log.Printf("Client disconnected: %s", clientID)
 	}()
 
 	// Keep the connection alive and handle ping/pong

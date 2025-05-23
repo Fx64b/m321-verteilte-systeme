@@ -14,244 +14,174 @@ import (
 	"github.com/gorilla/mux"
 	"gobuild/shared/kafka"
 	"gobuild/shared/message"
+	"gobuild/shared/model"
 )
 
-// BuildJob represents a build job
-type BuildJob struct {
-	ID            string    `json:"id"`
-	RepositoryURL string    `json:"repository_url"`
-	Branch        string    `json:"branch"`
-	CommitHash    string    `json:"commit_hash"`
-	UserID        string    `json:"user_id"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-// BuildOrchestrator manages build jobs
 type BuildOrchestrator struct {
-	jobs          map[string]*BuildJob
 	mutex         sync.RWMutex
 	kafkaProducer *kafka.Producer
 	redisClient   *redis.Client
 }
 
-// NewBuildOrchestrator creates a new BuildOrchestrator
 func NewBuildOrchestrator(kafkaProducer *kafka.Producer, redisClient *redis.Client) *BuildOrchestrator {
 	return &BuildOrchestrator{
-		jobs:          make(map[string]*BuildJob),
 		kafkaProducer: kafkaProducer,
 		redisClient:   redisClient,
 	}
 }
 
-// ProcessBuildRequest processes a build request
+// ProcessBuildRequest creates a new build
 func (bo *BuildOrchestrator) ProcessBuildRequest(buildReq message.BuildRequestMessage) error {
 	log.Printf("🔄 Processing build request: %s for repo: %s", buildReq.ID, buildReq.RepositoryURL)
 
-	// Create a new build job
-	job := &BuildJob{
+	// Create build status
+	buildStatus := &model.BuildStatus{
 		ID:            buildReq.ID,
 		RepositoryURL: buildReq.RepositoryURL,
 		Branch:        buildReq.Branch,
 		CommitHash:    buildReq.CommitHash,
 		UserID:        buildReq.UserID,
 		Status:        "queued",
+		Message:       "Build queued for processing",
 		CreatedAt:     buildReq.CreatedAt,
 		UpdatedAt:     time.Now(),
 	}
 
-	// Store the job in memory
-	bo.mutex.Lock()
-	bo.jobs[job.ID] = job
-	bo.mutex.Unlock()
-
-	// Store the job in Redis for persistence
-	jobJSON, err := json.Marshal(job)
-	if err != nil {
-		log.Printf("❌ Failed to marshal job: %v", err)
-		return err
-	}
-	ctx := context.Background()
-	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:%s", job.ID), jobJSON, 24*time.Hour).Err()
-	if err != nil {
-		log.Printf("❌ Failed to store job in Redis: %v", err)
-		return err
-	}
-
-	log.Printf("✅ Stored job %s in Redis", job.ID)
-
-	// Also store initial build info for status-dashboard-api
-	buildStatus := map[string]interface{}{
-		"id":             job.ID,
-		"repository_url": job.RepositoryURL,
-		"branch":         job.Branch,
-		"commit_hash":    job.CommitHash,
-		"status":         job.Status,
-		"message":        "Build queued",
-		"created_at":     job.CreatedAt,
-		"updated_at":     job.UpdatedAt,
-	}
-
-	buildStatusJSON, err := json.Marshal(buildStatus)
-	if err != nil {
-		log.Printf("❌ Failed to marshal build status: %v", err)
-		return err
-	}
-
-	// Store in the same format that status-dashboard-api expects
-	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:status:%s", job.ID), buildStatusJSON, 24*time.Hour).Err()
-	if err != nil {
+	// Store in Redis (single source of truth)
+	if err := bo.storeBuildStatus(buildStatus); err != nil {
 		log.Printf("❌ Failed to store build status: %v", err)
+		return err
 	}
 
-	// Send a status update
+	// Send status update via Kafka
 	statusMsg := message.BuildStatusMessage{
-		BuildID:   job.ID,
-		Status:    job.Status,
-		Message:   "Build queued for processing",
-		UpdatedAt: job.UpdatedAt,
+		BuildID:   buildStatus.ID,
+		Status:    buildStatus.Status,
+		Message:   buildStatus.Message,
+		UpdatedAt: buildStatus.UpdatedAt,
 	}
-	err = bo.kafkaProducer.SendMessage("build-status", job.ID, statusMsg)
-	if err != nil {
+	if err := bo.kafkaProducer.SendMessage("build-status", buildStatus.ID, statusMsg); err != nil {
 		log.Printf("❌ Failed to send status update: %v", err)
 		return err
 	}
 
-	log.Printf("✅ Sent status update for job %s", job.ID)
-
-	log.Printf("📤 Sending build job %s to build-jobs topic", job.ID)
-	// Forward the job to the builder - send to build-jobs topic
-	err = bo.kafkaProducer.SendMessage("build-jobs", job.ID, buildReq)
-	if err != nil {
+	// Forward to builder
+	if err := bo.kafkaProducer.SendMessage("build-jobs", buildReq.ID, buildReq); err != nil {
 		log.Printf("❌ Failed to send to build-jobs topic: %v", err)
 		return err
 	}
 
-	log.Printf("✅ Successfully sent build job %s to build-jobs topic", job.ID)
+	log.Printf("✅ Build %s created and queued", buildReq.ID)
 	return nil
 }
 
-// ProcessBuildStatus processes status updates from builders
+// ProcessBuildStatus updates build status
 func (bo *BuildOrchestrator) ProcessBuildStatus(statusMsg message.BuildStatusMessage) error {
 	log.Printf("📊 Processing build status update: %s - %s", statusMsg.BuildID, statusMsg.Status)
 
-	bo.mutex.Lock()
-	defer bo.mutex.Unlock()
-
-	job, exists := bo.jobs[statusMsg.BuildID]
-	if !exists {
-		// Try to load from Redis
-		ctx := context.Background()
-		jobJSON, err := bo.redisClient.Get(ctx, fmt.Sprintf("build:%s", statusMsg.BuildID)).Result()
-		if err != nil {
-			log.Printf("⚠️ Build job not found: %s", statusMsg.BuildID)
-			return nil // Don't return error, just log it
-		}
-
-		var loadedJob BuildJob
-		err = json.Unmarshal([]byte(jobJSON), &loadedJob)
-		if err != nil {
-			return err
-		}
-		bo.jobs[statusMsg.BuildID] = &loadedJob
-		job = &loadedJob
-	}
-
-	job.Status = statusMsg.Status
-	job.UpdatedAt = statusMsg.UpdatedAt
-
-	// Store the updated job in Redis
-	jobJSON, err := json.Marshal(job)
+	// Get existing build
+	buildStatus, err := bo.getBuildStatus(statusMsg.BuildID)
 	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:%s", job.ID), jobJSON, 24*time.Hour).Err()
-	if err != nil {
+		log.Printf("❌ Failed to get build status: %v", err)
 		return err
 	}
 
-	// Forward the status update to other services
-	return bo.kafkaProducer.SendMessage("build-status", statusMsg.BuildID, statusMsg)
+	// Update fields
+	buildStatus.Status = statusMsg.Status
+	buildStatus.Message = statusMsg.Message
+	buildStatus.UpdatedAt = statusMsg.UpdatedAt
+
+	// Set StartedAt if transitioning to in-progress
+	if statusMsg.Status == "in-progress" && buildStatus.StartedAt == nil {
+		now := time.Now()
+		buildStatus.StartedAt = &now
+	}
+
+	// Store updated status
+	if err := bo.storeBuildStatus(buildStatus); err != nil {
+		log.Printf("❌ Failed to update build status: %v", err)
+		return err
+	}
+
+	return nil
 }
 
-// ProcessBuildCompletion processes build completion messages
+// ProcessBuildCompletion handles build completion
 func (bo *BuildOrchestrator) ProcessBuildCompletion(completionMsg message.BuildCompletionMessage) error {
 	log.Printf("🏁 Processing build completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
 
-	bo.mutex.Lock()
-	defer bo.mutex.Unlock()
-
-	job, exists := bo.jobs[completionMsg.BuildID]
-	if !exists {
-		// Try to load from Redis
-		ctx := context.Background()
-		jobJSON, err := bo.redisClient.Get(ctx, fmt.Sprintf("build:%s", completionMsg.BuildID)).Result()
-		if err != nil {
-			log.Printf("⚠️ Build job not found: %s", completionMsg.BuildID)
-			return nil
-		}
-
-		var loadedJob BuildJob
-		err = json.Unmarshal([]byte(jobJSON), &loadedJob)
-		if err != nil {
-			return err
-		}
-		bo.jobs[completionMsg.BuildID] = &loadedJob
-		job = &loadedJob
-	}
-
-	job.Status = completionMsg.Status
-	job.UpdatedAt = completionMsg.CompletedAt
-
-	// Store the updated job in Redis
-	jobJSON, err := json.Marshal(job)
+	// Get existing build
+	buildStatus, err := bo.getBuildStatus(completionMsg.BuildID)
 	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	err = bo.redisClient.Set(ctx, fmt.Sprintf("build:%s", job.ID), jobJSON, 24*time.Hour).Err()
-	if err != nil {
+		log.Printf("❌ Failed to get build status: %v", err)
 		return err
 	}
 
-	// Forward the completion message to other services
-	return bo.kafkaProducer.SendMessage("build-completions", completionMsg.BuildID, completionMsg)
+	// Update fields
+	buildStatus.Status = completionMsg.Status
+	buildStatus.ArtifactURL = completionMsg.ArtifactURL
+	buildStatus.UpdatedAt = completionMsg.CompletedAt
+	buildStatus.CompletedAt = &completionMsg.CompletedAt
+	buildStatus.Duration = completionMsg.Duration
+
+	// Store updated status
+	if err := bo.storeBuildStatus(buildStatus); err != nil {
+		log.Printf("❌ Failed to update build completion: %v", err)
+		return err
+	}
+
+	return nil
 }
 
-// GetBuildJob retrieves a build job by ID
-func (bo *BuildOrchestrator) GetBuildJob(buildID string) (*BuildJob, error) {
-	bo.mutex.RLock()
-	job, exists := bo.jobs[buildID]
-	bo.mutex.RUnlock()
+// storeBuildStatus stores build status in Redis with proper locking
+func (bo *BuildOrchestrator) storeBuildStatus(buildStatus *model.BuildStatus) error {
+	ctx := context.Background()
+	key := fmt.Sprintf("build:%s", buildStatus.ID)
 
-	if exists {
-		return job, nil
+	// Use Redis transaction for atomic update
+	pipe := bo.redisClient.TxPipeline()
+
+	buildJSON, err := json.Marshal(buildStatus)
+	if err != nil {
+		return err
 	}
 
-	// Try to get from Redis
+	pipe.Set(ctx, key, buildJSON, 24*time.Hour)
+
+	// Also update a sorted set for efficient listing
+	pipe.ZAdd(ctx, "builds:by_date", &redis.Z{
+		Score:  float64(buildStatus.CreatedAt.Unix()),
+		Member: buildStatus.ID,
+	})
+
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+// getBuildStatus retrieves build status from Redis
+func (bo *BuildOrchestrator) getBuildStatus(buildID string) (*model.BuildStatus, error) {
 	ctx := context.Background()
-	jobJSON, err := bo.redisClient.Get(ctx, fmt.Sprintf("build:%s", buildID)).Result()
+	key := fmt.Sprintf("build:%s", buildID)
+
+	buildJSON, err := bo.redisClient.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return nil, fmt.Errorf("build job not found: %s", buildID)
+			return nil, fmt.Errorf("build not found: %s", buildID)
 		}
 		return nil, err
 	}
 
-	var retrievedJob BuildJob
-	err = json.Unmarshal([]byte(jobJSON), &retrievedJob)
-	if err != nil {
+	var buildStatus model.BuildStatus
+	if err := json.Unmarshal([]byte(buildJSON), &buildStatus); err != nil {
 		return nil, err
 	}
 
-	// Cache the job in memory
-	bo.mutex.Lock()
-	bo.jobs[retrievedJob.ID] = &retrievedJob
-	bo.mutex.Unlock()
+	return &buildStatus, nil
+}
 
-	return &retrievedJob, nil
+// GetBuildJob retrieves a build for API requests
+func (bo *BuildOrchestrator) GetBuildJob(buildID string) (*model.BuildStatus, error) {
+	return bo.getBuildStatus(buildID)
 }
 
 func main() {
@@ -285,41 +215,45 @@ func main() {
 
 	orchestrator := NewBuildOrchestrator(kafkaProducer, redisClient)
 
-	// Simple single consumer approach - let's go back to this to debug
 	kafkaConsumer, err := kafka.NewConsumer("kafka:29092", "build-orchestrator")
 	if err != nil {
 		log.Fatalf("❌ Failed to create Kafka consumer: %v", err)
 	}
 	defer kafkaConsumer.Close()
-	log.Println("✅ Kafka consumer created")
 
 	// Subscribe to all relevant topics
-	err = kafkaConsumer.Subscribe([]string{"build-requests"})
+	err = kafkaConsumer.Subscribe([]string{"build-requests", "build-status", "build-completions"})
 	if err != nil {
 		log.Fatalf("❌ Failed to subscribe to topics: %v", err)
 	}
-	log.Println("✅ Subscribed to build-requests topic")
+	log.Println("✅ Subscribed to topics: build-requests, build-status, build-completions")
 
-	// Start consuming messages from Kafka
+	// Start consuming messages
 	go func() {
-		log.Println("🎧 Starting to consume messages from Kafka...")
+		log.Println("🎧 Starting to consume messages...")
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
-			log.Printf("📨 Received message with key: %s", string(key))
-			log.Printf("📨 Message content: %s", string(value))
-
-			// Try to unmarshal as build request
+			// Try to process as build request
 			var buildReq message.BuildRequestMessage
-			if err := kafka.UnmarshalMessage(value, &buildReq); err != nil {
-				log.Printf("❌ Failed to unmarshal as BuildRequestMessage: %v", err)
-				return err
-			}
-
-			if buildReq.ID != "" {
+			if err := kafka.UnmarshalMessage(value, &buildReq); err == nil && buildReq.ID != "" {
 				log.Printf("📬 Received build request: %s", buildReq.ID)
 				return orchestrator.ProcessBuildRequest(buildReq)
 			}
 
-			log.Printf("⚠️ Received message but couldn't identify type")
+			// Try to process as status update
+			var statusMsg message.BuildStatusMessage
+			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
+				log.Printf("📊 Received status update: %s - %s", statusMsg.BuildID, statusMsg.Status)
+				return orchestrator.ProcessBuildStatus(statusMsg)
+			}
+
+			// Try to process as completion
+			var completionMsg message.BuildCompletionMessage
+			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
+				log.Printf("🏁 Received completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
+				return orchestrator.ProcessBuildCompletion(completionMsg)
+			}
+
+			log.Printf("⚠️ Received unknown message type")
 			return nil
 		})
 	}()

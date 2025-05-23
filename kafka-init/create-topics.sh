@@ -7,23 +7,21 @@ until nc -z kafka 29092; do
 done
 echo "Kafka is ready!"
 
-# List of topics to create
 TOPICS=(
   "build-requests"
-  "build-jobs"
   "build-status"
   "build-logs"
   "build-completions"
+  "build-jobs"
 )
 
-# Create topics
 for topic in "${TOPICS[@]}"; do
   echo "Creating topic: $topic"
   kafka-topics --create \
     --if-not-exists \
     --bootstrap-server kafka:29092 \
     --replication-factor 1 \
-    --partitions 3 \
+    --partitions 5 \
     --topic "$topic"
 done
 

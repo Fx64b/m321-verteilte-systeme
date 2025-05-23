@@ -2,10 +2,7 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"github.com/gorilla/mux"
 	"io"
 	"log"
@@ -27,128 +24,16 @@ type Builder struct {
 	workDir       string
 	kafkaProducer *kafka.Producer
 	storageURL    string
-	redisClient   *redis.Client
 }
 
 // NewBuilder creates a new Builder
-func NewBuilder(id, workDir, storageURL string, kafkaProducer *kafka.Producer, redisClient *redis.Client) *Builder {
+func NewBuilder(id, workDir, storageURL string, kafkaProducer *kafka.Producer) *Builder {
 	return &Builder{
 		id:            id,
 		workDir:       workDir,
 		kafkaProducer: kafkaProducer,
 		storageURL:    storageURL,
-		redisClient:   redisClient,
 	}
-}
-
-func (b *Builder) storeBuildLogInRedis(buildID string, logEntry string) error {
-	ctx := context.Background()
-
-	// Store log in Redis list
-	err := b.redisClient.RPush(ctx, "logs:"+buildID, logEntry).Err()
-	if err != nil {
-		log.Printf("❌ Failed to store log in Redis: %v", err)
-		return err
-	}
-
-	// Set expiry on logs
-	err = b.redisClient.Expire(ctx, "logs:"+buildID, 24*time.Hour).Err()
-	if err != nil {
-		log.Printf("⚠️ Failed to set expiry on logs: %v", err)
-	}
-
-	return nil
-}
-
-func (b *Builder) updateBuildStatusInRedis(buildID string, status, message string, artifactURL string) error {
-	ctx := context.Background()
-
-	// Try to get existing build data from Redis
-	var buildStatus map[string]interface{}
-
-	// Check if build:status:{buildID} exists
-	buildJSON, err := b.redisClient.Get(ctx, "build:status:"+buildID).Result()
-	if err == nil {
-		// Unmarshal existing data
-		err = json.Unmarshal([]byte(buildJSON), &buildStatus)
-		if err != nil {
-			log.Printf("❌ Failed to unmarshal build status: %v", err)
-			// Initialize empty map if unmarshal fails
-			buildStatus = make(map[string]interface{})
-			buildStatus["created_at"] = time.Now() // Ensure created_at is set
-		}
-	} else if err == redis.Nil {
-		// Key doesn't exist - check build:{buildID}
-		buildJSON, err = b.redisClient.Get(ctx, "build:"+buildID).Result()
-		if err == nil {
-			// Try to parse as BuildJob structure
-			var buildJob struct {
-				ID            string    `json:"id"`
-				RepositoryURL string    `json:"repository_url"`
-				Branch        string    `json:"branch"`
-				CommitHash    string    `json:"commit_hash"`
-				UserID        string    `json:"user_id"`
-				Status        string    `json:"status"`
-				CreatedAt     time.Time `json:"created_at"`
-				UpdatedAt     time.Time `json:"updated_at"`
-			}
-
-			err = json.Unmarshal([]byte(buildJSON), &buildJob)
-			if err == nil {
-				// Convert to map
-				buildStatus = map[string]interface{}{
-					"id":             buildJob.ID,
-					"repository_url": buildJob.RepositoryURL,
-					"branch":         buildJob.Branch,
-					"commit_hash":    buildJob.CommitHash,
-					"status":         buildJob.Status,
-					"created_at":     buildJob.CreatedAt,
-					"updated_at":     buildJob.UpdatedAt,
-				}
-			} else {
-				log.Printf("❌ Failed to unmarshal build job: %v", err)
-				buildStatus = make(map[string]interface{})
-				buildStatus["created_at"] = time.Now() // Ensure created_at is set here
-			}
-		} else {
-			// Neither key exists - create new empty status
-			buildStatus = make(map[string]interface{})
-			buildStatus["created_at"] = time.Now()
-		}
-	} else {
-		// Other error occurred
-		log.Printf("❌ Error retrieving build status from Redis: %v", err)
-		buildStatus = make(map[string]interface{})
-		buildStatus["created_at"] = time.Now()
-	}
-
-	// Update fields
-	buildStatus["id"] = buildID
-	buildStatus["status"] = status
-	buildStatus["updated_at"] = time.Now()
-
-	// Only update these fields if they have values
-	if message != "" {
-		buildStatus["message"] = message
-	}
-	if artifactURL != "" {
-		buildStatus["artifact_url"] = artifactURL
-	}
-
-	// Marshal and store
-	buildStatusJSON, err := json.Marshal(buildStatus)
-	if err != nil {
-		log.Printf("❌ Failed to marshal build status: %v", err)
-		return err
-	}
-
-	err = b.redisClient.Set(ctx, "build:status:"+buildID, buildStatusJSON, 24*time.Hour).Err()
-	if err != nil {
-		log.Printf("❌ Failed to store build status in Redis: %v", err)
-		return err
-	}
-
-	return nil
 }
 
 func (b *Builder) sendLogLines(buildID string, logContent string) {
@@ -162,9 +47,6 @@ func (b *Builder) sendLogLines(buildID string, logContent string) {
 				Timestamp: time.Now(),
 			}
 			b.kafkaProducer.SendMessage("build-logs", buildID, logMsg)
-
-			// Store in Redis
-			b.storeBuildLogInRedis(buildID, line)
 		}
 	}
 }
@@ -172,6 +54,18 @@ func (b *Builder) sendLogLines(buildID string, logContent string) {
 // ProcessBuildJob processes a build job
 func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	log.Printf("🔨 Processing build request: %s for repo: %s", buildReq.ID, buildReq.RepositoryURL)
+
+	// Send initial status update
+	statusMsg := message.BuildStatusMessage{
+		BuildID:   buildReq.ID,
+		Status:    "in-progress",
+		Message:   "Build started",
+		UpdatedAt: time.Now(),
+	}
+	// Send to build-status topic (orchestrator will consume this)
+	if err := b.kafkaProducer.SendMessage("build-status", buildReq.ID, statusMsg); err != nil {
+		return err
+	}
 
 	// Send initial log
 	b.sendLogLines(buildReq.ID, "Build started")
@@ -181,8 +75,7 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	}
 
 	// Send status update: in-progress
-	b.updateBuildStatusInRedis(buildReq.ID, "in-progress", "Build started", "")
-	statusMsg := message.BuildStatusMessage{
+	statusMsg = message.BuildStatusMessage{
 		BuildID:   buildReq.ID,
 		Status:    "in-progress",
 		Message:   "Build started",
@@ -551,12 +444,6 @@ func (b *Builder) uploadArtifact(buildID, artifactPath string) error {
 	} else {
 		artifactURL := fmt.Sprintf("%s/artifacts/%s", b.storageURL, buildID)
 
-		// Update Redis with the artifact URL
-		err = b.updateBuildStatusInRedis(buildID, "completed", "", artifactURL)
-		if err != nil {
-			log.Printf("⚠️ Failed to update build status in Redis: %v", err)
-		}
-
 		// Create and send build completion message via Kafka
 		completionMessage := message.BuildCompletionMessage{
 			BuildID:     buildID,
@@ -582,14 +469,9 @@ func (b *Builder) failBuild(buildID, errorMsg string) error {
 	log.Printf("❌ Build failed for %s: %s", buildID, errorMsg)
 
 	// Send failure log
-	logMsg := message.BuildLogMessage{
-		BuildID:   buildID,
-		LogEntry:  fmt.Sprintf("Build failed: %s", errorMsg),
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildID, logMsg)
-	b.storeBuildLogInRedis(buildID, fmt.Sprintf("Build failed: %s", errorMsg))
+	b.sendLogLines(buildID, fmt.Sprintf("Build failed: %s", errorMsg))
 
+	// Send completion message
 	completionMsg := message.BuildCompletionMessage{
 		BuildID:     buildID,
 		Status:      "failure",
@@ -602,6 +484,7 @@ func (b *Builder) failBuild(buildID, errorMsg string) error {
 		return err
 	}
 
+	// Send status update
 	statusMsg := message.BuildStatusMessage{
 		BuildID:   buildID,
 		Status:    "failed",
@@ -682,17 +565,11 @@ func main() {
 	}
 	log.Println("✅ Subscribed to build-jobs topic")
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "redis:6379",
-	})
-	defer redisClient.Close()
-	log.Println("✅ Redis client created")
-
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "unknown"
 	}
-	builder := NewBuilder(fmt.Sprintf("builder-%s", hostname), workDir, storageURL, kafkaProducer, redisClient)
+	builder := NewBuilder(fmt.Sprintf("builder-%s", hostname), workDir, storageURL, kafkaProducer)
 
 	go func() {
 		log.Println("🎧 Starting to consume messages from build-jobs...")

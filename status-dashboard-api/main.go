@@ -12,6 +12,7 @@ import (
 	"github.com/gorilla/mux"
 	"gobuild/shared/kafka"
 	"gobuild/shared/message"
+	"gobuild/shared/model"
 )
 
 type BuildStatus struct {
@@ -29,123 +30,56 @@ type BuildStatus struct {
 
 type StatusDashboardAPI struct {
 	redisClient *redis.Client
-	builds      map[string]*BuildStatus
 }
 
-// NewStatusDashboardAPI creates a new StatusDashboardAPI
 func NewStatusDashboardAPI(redisClient *redis.Client) *StatusDashboardAPI {
 	return &StatusDashboardAPI{
 		redisClient: redisClient,
-		builds:      make(map[string]*BuildStatus),
 	}
 }
 
 func (api *StatusDashboardAPI) GetBuilds(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 
-	// First try to get from build:status:* keys
-	statusKeys, err := api.redisClient.Keys(ctx, "build:status:*").Result()
+	// Get build IDs from sorted set (newest first)
+	buildIDs, err := api.redisClient.ZRevRange(ctx, "builds:by_date", 0, 99).Result()
 	if err != nil {
-		log.Printf("Failed to retrieve build status keys from Redis: %v", err)
+		log.Printf("Failed to get build IDs: %v", err)
+		buildIDs = []string{} // Fallback to empty list
 	}
 
-	// Also get from build:* keys (excluding build:status:*)
-	buildKeys, err := api.redisClient.Keys(ctx, "build:*").Result()
-	if err != nil {
-		log.Printf("Failed to retrieve build keys from Redis: %v", err)
-	}
+	builds := make([]*model.BuildStatus, 0)
 
-	// Combine and deduplicate
-	keyMap := make(map[string]bool)
-	buildMap := make(map[string]*BuildStatus)
-
-	// Process build:status:* keys first (these have the most up-to-date info)
-	for _, key := range statusKeys {
-		buildID := key[13:] // Remove "build:status:" prefix
-		keyMap[buildID] = true
-
-		buildJSON, err := api.redisClient.Get(ctx, key).Result()
+	// If no builds in sorted set, try pattern matching as fallback
+	if len(buildIDs) == 0 {
+		keys, err := api.redisClient.Keys(ctx, "build:*").Result()
 		if err != nil {
-			log.Printf("Failed to get build status %s: %v", key, err)
+			log.Printf("Failed to get build keys: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(builds)
+			return
+		}
+
+		for _, key := range keys {
+			if len(key) > 6 { // "build:" is 6 chars
+				buildIDs = append(buildIDs, key[6:])
+			}
+		}
+	}
+
+	// Retrieve each build
+	for _, buildID := range buildIDs {
+		buildJSON, err := api.redisClient.Get(ctx, "build:"+buildID).Result()
+		if err != nil {
 			continue
 		}
 
-		var build BuildStatus
-		err = json.Unmarshal([]byte(buildJSON), &build)
-		if err != nil {
-			log.Printf("Failed to unmarshal build status %s: %v", key, err)
+		var build model.BuildStatus
+		if err := json.Unmarshal([]byte(buildJSON), &build); err != nil {
 			continue
 		}
 
-		// Ensure ID is set
-		if build.ID == "" {
-			build.ID = buildID
-		}
-
-		buildMap[buildID] = &build
-	}
-
-	// Process build:* keys for any missing builds
-	for _, key := range buildKeys {
-		if len(key) > 6 && key[:6] == "build:" && key[:13] != "build:status:" {
-			buildID := key[6:] // Remove "build:" prefix
-
-			// Skip if we already have this build from status keys
-			if keyMap[buildID] {
-				continue
-			}
-
-			buildJSON, err := api.redisClient.Get(ctx, key).Result()
-			if err != nil {
-				log.Printf("Failed to get build %s: %v", key, err)
-				continue
-			}
-
-			// Try to parse as BuildJob structure from orchestrator
-			var buildJob struct {
-				ID            string    `json:"id"`
-				RepositoryURL string    `json:"repository_url"`
-				Branch        string    `json:"branch"`
-				CommitHash    string    `json:"commit_hash"`
-				UserID        string    `json:"user_id"`
-				Status        string    `json:"status"`
-				CreatedAt     time.Time `json:"created_at"`
-				UpdatedAt     time.Time `json:"updated_at"`
-			}
-
-			err = json.Unmarshal([]byte(buildJSON), &buildJob)
-			if err != nil {
-				log.Printf("Failed to unmarshal build %s: %v", key, err)
-				continue
-			}
-
-			build := &BuildStatus{
-				ID:            buildJob.ID,
-				RepositoryURL: buildJob.RepositoryURL,
-				Branch:        buildJob.Branch,
-				CommitHash:    buildJob.CommitHash,
-				Status:        buildJob.Status,
-				CreatedAt:     buildJob.CreatedAt,
-				UpdatedAt:     buildJob.UpdatedAt,
-			}
-
-			buildMap[buildID] = build
-		}
-	}
-
-	// Convert map to slice
-	builds := make([]*BuildStatus, 0, len(buildMap))
-	for _, build := range buildMap {
-		builds = append(builds, build)
-	}
-
-	// Sort builds by creation time (newest first)
-	for i := 0; i < len(builds)-1; i++ {
-		for j := 0; j < len(builds)-i-1; j++ {
-			if builds[j].CreatedAt.Before(builds[j+1].CreatedAt) {
-				builds[j], builds[j+1] = builds[j+1], builds[j]
-			}
-		}
+		builds = append(builds, &build)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -158,59 +92,22 @@ func (api *StatusDashboardAPI) GetBuild(w http.ResponseWriter, r *http.Request) 
 
 	ctx := context.Background()
 
-	// Try to get from build:status:* first
-	var build BuildStatus
-	buildFound := false
-
-	buildJSON, err := api.redisClient.Get(ctx, "build:status:"+buildID).Result()
-	if err == nil {
-		err = json.Unmarshal([]byte(buildJSON), &build)
-		if err == nil {
-			buildFound = true
+	buildJSON, err := api.redisClient.Get(ctx, "build:"+buildID).Result()
+	if err != nil {
+		if err == redis.Nil {
+			http.Error(w, "Build not found", http.StatusNotFound)
+			return
 		}
+		log.Printf("Failed to retrieve build %s: %v", buildID, err)
+		http.Error(w, "Failed to retrieve build", http.StatusInternalServerError)
+		return
 	}
 
-	// If not found, try regular build:* key
-	if !buildFound {
-		buildJSON, err = api.redisClient.Get(ctx, "build:"+buildID).Result()
-		if err != nil {
-			if err == redis.Nil {
-				http.Error(w, "Build not found", http.StatusNotFound)
-				return
-			}
-			log.Printf("Failed to retrieve build %s: %v", buildID, err)
-			http.Error(w, "Failed to retrieve build", http.StatusInternalServerError)
-			return
-		}
-
-		// Try to parse as BuildJob structure
-		var buildJob struct {
-			ID            string    `json:"id"`
-			RepositoryURL string    `json:"repository_url"`
-			Branch        string    `json:"branch"`
-			CommitHash    string    `json:"commit_hash"`
-			UserID        string    `json:"user_id"`
-			Status        string    `json:"status"`
-			CreatedAt     time.Time `json:"created_at"`
-			UpdatedAt     time.Time `json:"updated_at"`
-		}
-
-		err = json.Unmarshal([]byte(buildJSON), &buildJob)
-		if err != nil {
-			log.Printf("Failed to parse build data for %s: %v", buildID, err)
-			http.Error(w, "Failed to parse build data", http.StatusInternalServerError)
-			return
-		}
-
-		build = BuildStatus{
-			ID:            buildJob.ID,
-			RepositoryURL: buildJob.RepositoryURL,
-			Branch:        buildJob.Branch,
-			CommitHash:    buildJob.CommitHash,
-			Status:        buildJob.Status,
-			CreatedAt:     buildJob.CreatedAt,
-			UpdatedAt:     buildJob.UpdatedAt,
-		}
+	var build model.BuildStatus
+	if err := json.Unmarshal([]byte(buildJSON), &build); err != nil {
+		log.Printf("Failed to parse build data for %s: %v", buildID, err)
+		http.Error(w, "Failed to parse build data", http.StatusInternalServerError)
+		return
 	}
 
 	// Get logs for this build
@@ -218,10 +115,18 @@ func (api *StatusDashboardAPI) GetBuild(w http.ResponseWriter, r *http.Request) 
 	if err != nil && err != redis.Nil {
 		log.Printf("Failed to get logs for build %s: %v", buildID, err)
 	}
-	build.Logs = logs
+
+	// Add logs to response
+	response := struct {
+		*model.BuildStatus
+		Logs []string `json:"logs,omitempty"`
+	}{
+		BuildStatus: &build,
+		Logs:        logs,
+	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(build)
+	json.NewEncoder(w).Encode(response)
 }
 
 // ProcessBuildStatus processes a build status update
@@ -303,6 +208,7 @@ func (api *StatusDashboardAPI) ProcessBuildStatus(statusMsg message.BuildStatusM
 	}
 }
 
+// ProcessBuildLog stores build logs (still needed for log storage)
 func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
 	ctx := context.Background()
 
@@ -312,13 +218,8 @@ func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
 		return
 	}
 
-	err = api.redisClient.Expire(ctx, "logs:"+logMsg.BuildID, 24*time.Hour).Err()
-	if err != nil {
-		log.Printf("Failed to set expiry for logs of build %s: %v", logMsg.BuildID, err)
-		return
-	}
-
-	log.Printf("Saved log entry for build: %s", logMsg.BuildID)
+	// Set expiry on logs
+	api.redisClient.Expire(ctx, "logs:"+logMsg.BuildID, 24*time.Hour)
 }
 
 // ProcessBuildCompletion processes a build completion message
@@ -435,27 +336,11 @@ func main() {
 
 	go func() {
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
-			// Try to unmarshal as different message types
-			var statusMsg message.BuildStatusMessage
-			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
-				api.ProcessBuildStatus(statusMsg)
-				return nil
-			}
-
 			var logMsg message.BuildLogMessage
 			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" {
 				api.ProcessBuildLog(logMsg)
 				return nil
 			}
-
-			var completionMsg message.BuildCompletionMessage
-			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
-				log.Printf("Received completion message for build: %s", completionMsg.BuildID)
-				api.ProcessBuildCompletion(completionMsg)
-				return nil
-			}
-
-			log.Printf("Unknown message type received")
 			return nil
 		})
 	}()

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useEffect, useState, use, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,11 @@ export default function BuildDetailsPage({ params }: PageProps) {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [socket, setSocket] = useState<WebSocket | null>(null);
+
+    const filteredLogs = useMemo(
+        () => (build?.logs ? build.logs.filter(log => log && log.trim() !== "") : []),
+        [build?.logs]
+    );
 
     // Fetch initial build data
     useEffect(() => {
@@ -302,8 +307,8 @@ export default function BuildDetailsPage({ params }: PageProps) {
                 </CardHeader>
                 <CardContent>
                     <div className="bg-black text-green-400 p-4 rounded-lg font-mono text-sm h-96 overflow-y-auto">
-                        {build.logs && build.logs.length > 0 ? (
-                            build.logs.map((log, index) => (
+                        {filteredLogs.length > 0 ? (
+                            filteredLogs.map((log, index) => (
                                 <div key={index} className="mb-1">
                                     <span className="text-gray-500">[{index.toString().padStart(4, '0')}]</span> {log}
                                 </div>
