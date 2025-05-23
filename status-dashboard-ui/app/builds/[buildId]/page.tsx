@@ -39,31 +39,32 @@ export default function BuildDetailsPage({ params }: PageProps) {
         [build?.logs]
     );
 
+    // Function to fetch build details
+    const fetchBuildDetails = async () => {
+        try {
+            const token = localStorage.getItem("authToken");
+            const response = await fetch(`http://localhost:8086/api/builds/${buildId}`, {
+                headers: token ? {
+                    "Authorization": `Bearer ${token}`
+                } : {}
+            });
+
+            if (!response.ok) {
+                throw new Error("Failed to fetch build details");
+            }
+
+            const data = await response.json();
+            console.log("Fetched build details:", data);
+            setBuild(data);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "An error occurred");
+        } finally {
+            setLoading(false);
+        }
+    };
+
     // Fetch initial build data
     useEffect(() => {
-        const fetchBuildDetails = async () => {
-            try {
-                const token = localStorage.getItem("authToken");
-                const response = await fetch(`http://localhost:8086/api/builds/${buildId}`, {
-                    headers: token ? {
-                        "Authorization": `Bearer ${token}`
-                    } : {}
-                });
-
-                if (!response.ok) {
-                    throw new Error("Failed to fetch build details");
-                }
-
-                const data = await response.json();
-                console.log("Fetched build details:", data);
-                setBuild(data);
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "An error occurred");
-            } finally {
-                setLoading(false);
-            }
-        };
-
         fetchBuildDetails();
     }, [buildId]);
 
@@ -85,12 +86,19 @@ export default function BuildDetailsPage({ params }: PageProps) {
             if (data.type === "status") {
                 setBuild(prevBuild => {
                     if (!prevBuild) return null;
-                    return {
+                    const updatedBuild = {
                         ...prevBuild,
                         status: data.status,
                         message: data.message,
                         updated_at: data.time
                     };
+
+                    // If status is success, reload project data
+                    if (data.status === "success") {
+                        setTimeout(() => fetchBuildDetails(), 0);
+                    }
+
+                    return updatedBuild;
                 });
             } else if (data.type === "log") {
                 setBuild(prevBuild => {
@@ -103,12 +111,19 @@ export default function BuildDetailsPage({ params }: PageProps) {
             } else if (data.type === "completion") {
                 setBuild(prevBuild => {
                     if (!prevBuild) return null;
-                    return {
+                    const updatedBuild = {
                         ...prevBuild,
                         status: data.status,
                         artifact_url: data.artifactUrl,
                         updated_at: data.time
                     };
+
+                    // If status is success, reload project data
+                    if (data.status === "success") {
+                        setTimeout(() => fetchBuildDetails(), 0);
+                    }
+
+                    return updatedBuild;
                 });
             }
         };

@@ -109,6 +109,7 @@ func (bo *BuildOrchestrator) ProcessBuildStatus(statusMsg message.BuildStatusMes
 // ProcessBuildCompletion handles build completion
 func (bo *BuildOrchestrator) ProcessBuildCompletion(completionMsg message.BuildCompletionMessage) error {
 	log.Printf("🏁 Processing build completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
+	log.Printf("📦 Artifact URL: %s", completionMsg.ArtifactURL)
 
 	buildStatus, err := bo.getBuildStatus(completionMsg.BuildID)
 	if err != nil {
@@ -244,18 +245,17 @@ func main() {
 				return orchestrator.ProcessBuildRequest(buildReq)
 			}
 
+			// Try to process as completion
+			var completionMsg message.BuildCompletionMessage
+			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" && completionMsg.ArtifactURL != "" {
+				log.Printf("🏁 Received completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
+				return orchestrator.ProcessBuildCompletion(completionMsg)
+			}
+
 			// Try to process as status update
 			var statusMsg message.BuildStatusMessage
 			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
-				log.Printf("📊 Received status update: %s - %s", statusMsg.BuildID, statusMsg.Status)
 				return orchestrator.ProcessBuildStatus(statusMsg)
-			}
-
-			// Try to process as completion
-			var completionMsg message.BuildCompletionMessage
-			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
-				log.Printf("🏁 Received completion: %s - %s", completionMsg.BuildID, completionMsg.Status)
-				return orchestrator.ProcessBuildCompletion(completionMsg)
 			}
 
 			log.Printf("⚠️ Received unknown message type")
