@@ -39,15 +39,13 @@ func NewProducer(bootstrapServers string) (*Producer, error) {
 
 // SendMessage sends a message to the specified topic
 func (p *Producer) SendMessage(topic string, key string, value interface{}) error {
-	log.Printf("📤 Attempting to send message to topic: %s, key: %s", topic, key)
 
 	jsonValue, err := json.Marshal(value)
 	if err != nil {
 		log.Printf("❌ Failed to marshal message: %v", err)
+		log.Printf("❌ 📤 Message content: %s", string(jsonValue))
 		return err
 	}
-
-	log.Printf("📤 Message content: %s", string(jsonValue))
 
 	err = p.producer.Produce(&kafka.Message{
 		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},

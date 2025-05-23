@@ -36,9 +36,9 @@ cd gobuild
 ./build.sh
 ```
 
-Redpanda:
+Redpanda (For debugging kafka messages):
 ```bash
  docker run --network=host -e KAFKA_BROKERS=localhost:9092 -e SERVER_PORT=8089 docker.redpanda.com/redpandadata/console:latest
 ```
 
-Then visit: http://[::1]:8080/overview
+Then visit: [Redpanda Console](http://[::1]:8080/overview)

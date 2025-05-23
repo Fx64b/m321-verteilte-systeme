@@ -125,7 +125,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     deploy:
-      replicas: 2
+      replicas: 5
     volumes:
       - build-work:/app/work
 

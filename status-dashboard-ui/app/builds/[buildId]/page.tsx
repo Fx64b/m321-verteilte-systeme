@@ -50,6 +50,7 @@ export default function BuildDetailsPage({ params }: PageProps) {
                 }
 
                 const data = await response.json();
+                console.log("Fetched build details:", data);
                 setBuild(data);
             } catch (err) {
                 setError(err instanceof Error ? err.message : "An error occurred");
@@ -73,7 +74,6 @@ export default function BuildDetailsPage({ params }: PageProps) {
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            console.log("WebSocket message received:", data);
 
             if (data.buildId !== buildId) return;
 
@@ -319,8 +319,9 @@ export default function BuildDetailsPage({ params }: PageProps) {
             {build.artifact_url && (
                 <div className="mt-6 flex justify-center">
                     <Button asChild size="lg">
+                        {/*doing a replace here is a not so good workaround and could/will cause problems on other systems, but I don't want to fetch it from the backend first then load it here and download it for the user..*/}
 <a
-                        href={`http://localhost:8084${build.artifact_url}`}
+                        href={build.artifact_url.replace("storage", "localhost")}
                         target="_blank"
                         rel="noopener noreferrer"
                         >
