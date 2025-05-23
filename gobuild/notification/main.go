@@ -119,7 +119,7 @@ func (ns *NotificationService) BroadcastBuildLog(logMsg message.BuildLogMessage)
 	ns.clientsMutex.RLock()
 	defer ns.clientsMutex.RUnlock()
 
-	message := map[string]interface{}{
+	logMessage := map[string]interface{}{
 		"type":    "log",
 		"buildId": logMsg.BuildID,
 		"log":     logMsg.LogEntry,
@@ -129,9 +129,9 @@ func (ns *NotificationService) BroadcastBuildLog(logMsg message.BuildLogMessage)
 	for clientID, client := range ns.clients {
 		// Send to clients that are interested in this build or all builds
 		if client.buildID == "" || client.buildID == logMsg.BuildID {
-			err := client.conn.WriteJSON(message)
+			err := client.conn.WriteJSON(logMessage)
 			if err != nil {
-				log.Printf("Failed to send message to client %s: %v", clientID, err)
+				log.Printf("Failed to send logMessage to client %s: %v", clientID, err)
 				// Client will be cleaned up by the connection handler
 			}
 		}
@@ -144,7 +144,7 @@ func (ns *NotificationService) BroadcastBuildCompletion(completionMsg message.Bu
 	ns.clientsMutex.RLock()
 	defer ns.clientsMutex.RUnlock()
 
-	message := map[string]interface{}{
+	buildMessage := map[string]interface{}{
 		"type":        "completion",
 		"buildId":     completionMsg.BuildID,
 		"status":      completionMsg.Status,
@@ -156,9 +156,9 @@ func (ns *NotificationService) BroadcastBuildCompletion(completionMsg message.Bu
 	for clientID, client := range ns.clients {
 		// Send to clients that are interested in this build or all builds
 		if client.buildID == "" || client.buildID == completionMsg.BuildID {
-			err := client.conn.WriteJSON(message)
+			err := client.conn.WriteJSON(buildMessage)
 			if err != nil {
-				log.Printf("Failed to send message to client %s: %v", clientID, err)
+				log.Printf("Failed to send buildMessage to client %s: %v", clientID, err)
 				// Client will be cleaned up by the connection handler
 			}
 		}
@@ -191,27 +191,27 @@ func main() {
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
 			// Try to unmarshal as different message types
 			var statusMsg message.BuildStatusMessage
-			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
-				log.Printf("Received status message for build: %s", statusMsg.BuildID)
+			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" && statusMsg.Status != "" {
+				log.Printf("Received status message for build: %s - Status: %s", statusMsg.BuildID, statusMsg.Status)
 				notificationService.BroadcastBuildStatus(statusMsg)
 				return nil
 			}
 
 			var logMsg message.BuildLogMessage
-			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" {
-				log.Printf("Received log message for build: %s", logMsg.BuildID)
+			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" && logMsg.LogEntry != "" {
+				log.Printf("Received log message for build: %s - Log: %s", logMsg.BuildID, logMsg.LogEntry)
 				notificationService.BroadcastBuildLog(logMsg)
 				return nil
 			}
 
 			var completionMsg message.BuildCompletionMessage
-			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" {
-				log.Printf("Received completion message for build: %s", completionMsg.BuildID)
+			if err := kafka.UnmarshalMessage(value, &completionMsg); err == nil && completionMsg.BuildID != "" && completionMsg.Status != "" {
+				log.Printf("Received completion message for build: %s - Status: %s", completionMsg.BuildID, completionMsg.Status)
 				notificationService.BroadcastBuildCompletion(completionMsg)
 				return nil
 			}
 
-			log.Printf("Unknown message type received")
+			log.Printf("Unknown or invalid message type received")
 			return nil
 		})
 	}()

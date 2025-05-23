@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gobuild/shared/kafka"
@@ -35,9 +36,30 @@ func NewBuilder(id, workDir, storageURL string, kafkaProducer *kafka.Producer) *
 	}
 }
 
+func (b *Builder) sendLogLines(buildID string, logContent string) {
+	lines := strings.Split(strings.TrimSpace(logContent), "\n")
+	for _, line := range lines {
+		if line != "" {
+			logMsg := message.BuildLogMessage{
+				BuildID:   buildID,
+				LogEntry:  line,
+				Timestamp: time.Now(),
+			}
+			b.kafkaProducer.SendMessage("build-logs", buildID, logMsg)
+		}
+	}
+}
+
 // ProcessBuildJob processes a build job
 func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	log.Printf("🔨 Processing build request: %s for repo: %s", buildReq.ID, buildReq.RepositoryURL)
+
+	// Send initial log
+	b.sendLogLines(buildReq.ID, "Build started")
+	b.sendLogLines(buildReq.ID, fmt.Sprintf("Repository: %s", buildReq.RepositoryURL))
+	if buildReq.Branch != "" {
+		b.sendLogLines(buildReq.ID, fmt.Sprintf("Branch: %s", buildReq.Branch))
+	}
 
 	// Send status update: in-progress
 	statusMsg := message.BuildStatusMessage{
@@ -66,12 +88,7 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 		}
 	}()
 
-	logMsg := message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  "Cloning repository...",
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, "Cloning repository...")
 
 	// Git clone with proper error handling
 	cloneCmd := exec.Command("git", "clone", buildReq.RepositoryURL, buildDir)
@@ -82,34 +99,19 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	cloneCmd.Stderr = &cloneOutput
 
 	if err := cloneCmd.Run(); err != nil {
-		errorMsg := fmt.Sprintf("Clone failed: %s\nOutput: %s", err.Error(), cloneOutput.String())
-		log.Printf("❌ Git clone failed for %s: %s", buildReq.RepositoryURL, errorMsg)
-
-		logMsg := message.BuildLogMessage{
-			BuildID:   buildReq.ID,
-			LogEntry:  errorMsg,
-			Timestamp: time.Now(),
-		}
-		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		errorMsg := fmt.Sprintf("Clone failed: %s", err.Error())
+		b.sendLogLines(buildReq.ID, errorMsg)
+		b.sendLogLines(buildReq.ID, cloneOutput.String())
 		return b.failBuild(buildReq.ID, "Failed to clone repository: "+err.Error())
 	}
 
 	// Log successful clone
-	logMsg = message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  fmt.Sprintf("Repository cloned successfully\n%s", cloneOutput.String()),
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, "Repository cloned successfully")
+	b.sendLogLines(buildReq.ID, cloneOutput.String())
 
 	// Checkout specific branch if specified
 	if buildReq.Branch != "" && buildReq.Branch != "main" && buildReq.Branch != "master" {
-		logMsg := message.BuildLogMessage{
-			BuildID:   buildReq.ID,
-			LogEntry:  fmt.Sprintf("Checking out branch: %s", buildReq.Branch),
-			Timestamp: time.Now(),
-		}
-		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		b.sendLogLines(buildReq.ID, fmt.Sprintf("Checking out branch: %s", buildReq.Branch))
 
 		checkoutCmd := exec.Command("git", "checkout", buildReq.Branch)
 		checkoutCmd.Dir = buildDir
@@ -119,24 +121,14 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 		checkoutCmd.Stderr = &checkoutOutput
 
 		if err := checkoutCmd.Run(); err != nil {
-			errorMsg := fmt.Sprintf("Checkout failed: %s\nOutput: %s", err.Error(), checkoutOutput.String())
-			log.Printf("❌ Git checkout failed: %s", errorMsg)
-
-			logMsg := message.BuildLogMessage{
-				BuildID:   buildReq.ID,
-				LogEntry:  errorMsg,
-				Timestamp: time.Now(),
-			}
-			b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+			errorMsg := fmt.Sprintf("Checkout failed: %s", err.Error())
+			b.sendLogLines(buildReq.ID, errorMsg)
+			b.sendLogLines(buildReq.ID, checkoutOutput.String())
 			return b.failBuild(buildReq.ID, "Failed to checkout branch: "+err.Error())
 		}
 
-		logMsg = message.BuildLogMessage{
-			BuildID:   buildReq.ID,
-			LogEntry:  fmt.Sprintf("Branch checked out successfully\n%s", checkoutOutput.String()),
-			Timestamp: time.Now(),
-		}
-		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		b.sendLogLines(buildReq.ID, "Branch checked out successfully")
+		b.sendLogLines(buildReq.ID, checkoutOutput.String())
 	}
 
 	// Execute build process
@@ -148,6 +140,8 @@ func (b *Builder) ProcessBuildJob(buildReq message.BuildRequestMessage) error {
 	if err := b.createAndUploadArtifact(buildReq, buildDir); err != nil {
 		return b.failBuild(buildReq.ID, "Failed to create artifact: "+err.Error())
 	}
+
+	b.sendLogLines(buildReq.ID, "Build completed successfully!")
 
 	// Send completion message
 	completionMsg := message.BuildCompletionMessage{
@@ -197,26 +191,17 @@ func (b *Builder) buildByProjectType(buildReq message.BuildRequestMessage, build
 
 // buildNodeProject builds a Node.js project
 func (b *Builder) buildNodeProject(buildReq message.BuildRequestMessage, buildDir string) error {
-	logMsg := message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  "Detected Node.js project, running npm install and build",
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, "Detected Node.js project")
 
 	packageManager := b.detectNodePackageManager(buildDir)
 	if packageManager == "unknown" {
 		packageManager = "npm"
 	}
 
-	logMsg = message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  fmt.Sprintf("Using package manager: %s", packageManager),
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, fmt.Sprintf("Using package manager: %s", packageManager))
 
 	// Install dependencies
+	b.sendLogLines(buildReq.ID, fmt.Sprintf("Running %s install...", packageManager))
 	installCmd := exec.Command(packageManager, "install")
 	installCmd.Dir = buildDir
 
@@ -225,24 +210,17 @@ func (b *Builder) buildNodeProject(buildReq message.BuildRequestMessage, buildDi
 	installCmd.Stderr = &installOutput
 
 	if err := installCmd.Run(); err != nil {
-		errorMsg := fmt.Sprintf("%s install failed: %s\nOutput: %s", packageManager, err.Error(), installOutput.String())
-		logMsg := message.BuildLogMessage{
-			BuildID:   buildReq.ID,
-			LogEntry:  errorMsg,
-			Timestamp: time.Now(),
-		}
-		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		errorMsg := fmt.Sprintf("%s install failed: %s", packageManager, err.Error())
+		b.sendLogLines(buildReq.ID, errorMsg)
+		b.sendLogLines(buildReq.ID, installOutput.String())
 		return fmt.Errorf("failed to install dependencies: %s", err.Error())
 	}
 
-	logMsg = message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  fmt.Sprintf("Dependencies installed successfully\n%s", installOutput.String()),
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, "Dependencies installed successfully")
+	b.sendLogLines(buildReq.ID, installOutput.String())
 
 	// Build project
+	b.sendLogLines(buildReq.ID, fmt.Sprintf("Running %s run build...", packageManager))
 	buildCmd := exec.Command(packageManager, "run", "build")
 	buildCmd.Dir = buildDir
 
@@ -251,22 +229,14 @@ func (b *Builder) buildNodeProject(buildReq message.BuildRequestMessage, buildDi
 	buildCmd.Stderr = &buildOutput
 
 	if err := buildCmd.Run(); err != nil {
-		errorMsg := fmt.Sprintf("%s build failed: %s\nOutput: %s", packageManager, err.Error(), buildOutput.String())
-		logMsg := message.BuildLogMessage{
-			BuildID:   buildReq.ID,
-			LogEntry:  errorMsg,
-			Timestamp: time.Now(),
-		}
-		b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+		errorMsg := fmt.Sprintf("%s build failed: %s", packageManager, err.Error())
+		b.sendLogLines(buildReq.ID, errorMsg)
+		b.sendLogLines(buildReq.ID, buildOutput.String())
 		return fmt.Errorf("failed to build project: %s", err.Error())
 	}
 
-	logMsg = message.BuildLogMessage{
-		BuildID:   buildReq.ID,
-		LogEntry:  fmt.Sprintf("Project built successfully\n%s", buildOutput.String()),
-		Timestamp: time.Now(),
-	}
-	b.kafkaProducer.SendMessage("build-logs", buildReq.ID, logMsg)
+	b.sendLogLines(buildReq.ID, "Project built successfully")
+	b.sendLogLines(buildReq.ID, buildOutput.String())
 
 	return nil
 }

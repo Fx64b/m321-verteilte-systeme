@@ -84,8 +84,8 @@ func (bo *BuildOrchestrator) ProcessBuildRequest(buildReq message.BuildRequestMe
 	// Send a status update
 	statusMsg := message.BuildStatusMessage{
 		BuildID:   job.ID,
-		Status:    job.Status,
-		Message:   "Build queued",
+		Status:    "queued",
+		Message:   "Build queued for processing",
 		UpdatedAt: job.UpdatedAt,
 	}
 	err = bo.kafkaProducer.SendMessage("build-status", job.ID, statusMsg)

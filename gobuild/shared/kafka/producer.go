@@ -29,9 +29,6 @@ func NewProducer(bootstrapServers string) (*Producer, error) {
 			case *kafka.Message:
 				if ev.TopicPartition.Error != nil {
 					log.Printf("❌ Failed to deliver message to %s: %v", *ev.TopicPartition.Topic, ev.TopicPartition.Error)
-				} else {
-					log.Printf("✅ Message delivered to %s [partition %d] at offset %v",
-						*ev.TopicPartition.Topic, ev.TopicPartition.Partition, ev.TopicPartition.Offset)
 				}
 			}
 		}

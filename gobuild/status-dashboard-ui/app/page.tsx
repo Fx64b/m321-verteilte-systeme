@@ -1,5 +1,5 @@
 "use client";
-
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,8 @@ export default function Dashboard() {
   const [registerPassword, setRegisterPassword] = useState("");
   const [isRegistering, setIsRegistering] = useState(false);
   const [authError, setAuthError] = useState("");
+
+  const router = useRouter();
 
   // Check if user is already logged in
   useEffect(() => {
@@ -203,7 +205,7 @@ export default function Dashboard() {
     }
   };
 
-  // Handle new build submission
+// Update the handleSubmitBuild function
   const handleSubmitBuild = async () => {
     if (!repositoryUrl) return;
 
@@ -233,17 +235,12 @@ export default function Dashboard() {
       const data = await response.json();
       console.log("Build submitted:", data);
 
-      // Reset form
-      setRepositoryUrl("");
-      setBranch("");
-
-      // Refresh builds
-      fetchBuilds();
+      // Navigate to the build details page
+      router.push(`/builds/${data.build_id}`);
     } catch (error) {
       console.error("Error submitting build:", error);
     }
   };
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case "completed":
