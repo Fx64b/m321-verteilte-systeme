@@ -111,7 +111,6 @@ func (ns *NotificationService) BroadcastBuildStatus(statusMsg message.BuildStatu
 		}
 	}
 
-	log.Printf("Broadcasted status update for build %s to %d clients", statusMsg.BuildID, len(ns.clients))
 }
 
 // BroadcastBuildLog broadcasts a build log entry to all connected clients
@@ -136,8 +135,6 @@ func (ns *NotificationService) BroadcastBuildLog(logMsg message.BuildLogMessage)
 			}
 		}
 	}
-
-	log.Printf("Broadcasted log entry for build %s to %d clients", logMsg.BuildID, len(ns.clients))
 }
 
 func (ns *NotificationService) BroadcastBuildCompletion(completionMsg message.BuildCompletionMessage) {
@@ -192,14 +189,12 @@ func main() {
 			// Try to unmarshal as different message types
 			var statusMsg message.BuildStatusMessage
 			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" && statusMsg.Status != "" {
-				log.Printf("Received status message for build: %s - Status: %s", statusMsg.BuildID, statusMsg.Status)
 				notificationService.BroadcastBuildStatus(statusMsg)
 				return nil
 			}
 
 			var logMsg message.BuildLogMessage
 			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" && logMsg.LogEntry != "" {
-				log.Printf("Received log message for build: %s - Log: %s", logMsg.BuildID, logMsg.LogEntry)
 				notificationService.BroadcastBuildLog(logMsg)
 				return nil
 			}

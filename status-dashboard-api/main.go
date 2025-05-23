@@ -301,8 +301,6 @@ func (api *StatusDashboardAPI) ProcessBuildStatus(statusMsg message.BuildStatusM
 		log.Printf("Failed to save build %s: %v", statusMsg.BuildID, err)
 		return
 	}
-
-	log.Printf("Updated build status: %s - %s", statusMsg.BuildID, statusMsg.Status)
 }
 
 func (api *StatusDashboardAPI) ProcessBuildLog(logMsg message.BuildLogMessage) {
@@ -440,14 +438,12 @@ func main() {
 			// Try to unmarshal as different message types
 			var statusMsg message.BuildStatusMessage
 			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" {
-				log.Printf("Received status message for build: %s", statusMsg.BuildID)
 				api.ProcessBuildStatus(statusMsg)
 				return nil
 			}
 
 			var logMsg message.BuildLogMessage
 			if err := kafka.UnmarshalMessage(value, &logMsg); err == nil && logMsg.BuildID != "" {
-				log.Printf("Received log message for build: %s", logMsg.BuildID)
 				api.ProcessBuildLog(logMsg)
 				return nil
 			}

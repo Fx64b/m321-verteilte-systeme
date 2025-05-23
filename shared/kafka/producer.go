@@ -58,7 +58,7 @@ func (p *Producer) SendMessage(topic string, key string, value interface{}) erro
 		return err
 	}
 
-	log.Printf("✅ Message queued for topic: %s", topic)
+	// DEBUG: log.Printf("✅ Message queued for topic: %s", topic)
 	return nil
 }
 

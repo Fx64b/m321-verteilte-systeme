@@ -75,6 +75,7 @@ func (b *Builder) updateBuildStatusInRedis(buildID string, status, message strin
 			log.Printf("❌ Failed to unmarshal build status: %v", err)
 			// Initialize empty map if unmarshal fails
 			buildStatus = make(map[string]interface{})
+			buildStatus["created_at"] = time.Now() // Ensure created_at is set
 		}
 	} else if err == redis.Nil {
 		// Key doesn't exist - check build:{buildID}
@@ -107,11 +108,11 @@ func (b *Builder) updateBuildStatusInRedis(buildID string, status, message strin
 			} else {
 				log.Printf("❌ Failed to unmarshal build job: %v", err)
 				buildStatus = make(map[string]interface{})
+				buildStatus["created_at"] = time.Now() // Ensure created_at is set here
 			}
 		} else {
 			// Neither key exists - create new empty status
 			buildStatus = make(map[string]interface{})
-			// Add created_at for new builds
 			buildStatus["created_at"] = time.Now()
 		}
 	} else {
@@ -697,7 +698,6 @@ func main() {
 		log.Println("🎧 Starting to consume messages from build-jobs...")
 		kafkaConsumer.ConsumeMessages(func(key, value []byte) error {
 			log.Printf("📨 Received message with key: %s", string(key))
-			log.Printf("📨 Message content: %s", string(value))
 
 			var buildReq message.BuildRequestMessage
 			if err := kafka.UnmarshalMessage(value, &buildReq); err != nil {
