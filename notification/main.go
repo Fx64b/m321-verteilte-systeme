@@ -189,7 +189,9 @@ func main() {
 			// Try to unmarshal as different message types
 			var statusMsg message.BuildStatusMessage
 			if err := kafka.UnmarshalMessage(value, &statusMsg); err == nil && statusMsg.BuildID != "" && statusMsg.Status != "" {
-				notificationService.BroadcastBuildStatus(statusMsg)
+				if !statusMsg.UpdatedAt.IsZero() {
+					notificationService.BroadcastBuildStatus(statusMsg)
+				}
 				return nil
 			}
 
