@@ -1,44 +1,66 @@
 # GoBuild
 
-GoBuild is a Vercel-like build pipeline system optimized for throughput, speed, and concurrency, built with Go and Docker Compose.
+GoBuild ist ein verteiltes Build-System für die automatisierte Erstellung und Bereitstellung von Anwendungen, entwickelt mit Go und Docker Compose.
 
-## Architecture
+![Systemarchitektur](docs/diagram.png)
 
-The system consists of six microservices:
-- API Gateway: Entry point for client requests
-- Build Orchestrator: Manages build jobs and scheduling
-- Builder: Executes build processes
-- Storage: Manages build artifacts and logs
-- Notification: Handles status updates and alerts
-- Status Dashboard: Provides UI for monitoring builds
+## Architektur
 
-## Technologies
+Das System besteht aus sechs Mikroservices:
+- API Gateway: Eingangspunkt für Client-Anfragen
+- Build Orchestrator: Verwaltet Build-Jobs und deren Planung
+- Builder: Führt Build-Prozesse aus
+- Storage: Verwaltet Build-Artefakte und Logs
+- Notification: Behandelt Statusaktualisierungen und Benachrichtigungen
+- Status Dashboard: Bietet eine Benutzeroberfläche zur Überwachung von Builds
+
+## Technologien
 
 - Backend: Go (Golang)
-- Frontend: React with shadcn/ui components
-- Message Queue: Apache Kafka
+- Frontend: React mit shadcn/ui Komponenten
+- Nachrichtenwarteschlange: Apache Kafka
 - Caching: Redis
-- Containerization: Docker and Docker Compose
+- Containerisierung: Docker und Docker Compose
 
-## Getting Started
+## Komponenten im Detail
 
-### Prerequisites
+### Build Orchestrator
+Verwaltet den Build-Prozess, verarbeitet Build-Anfragen und verfolgt den Status von Builds. Verwendet Kafka für die Kommunikation mit anderen Diensten und Redis zur Speicherung von Build-Statusinformationen.
 
-- Docker and Docker Compose
+### Builder
+Führt die eigentlichen Build-Prozesse aus. Unterstützt verschiedene Projekttypen (Node.js und Go) und erstellt Build-Artefakte. Sendet Logs während des Build-Prozesses.
+
+### Storage
+Speichert und verwaltet Build-Artefakte. Bietet HTTP-Endpunkte zum Hochladen und Herunterladen von Artefakten.
+
+### Notification
+Verarbeitet Statusaktualisierungen und sendet Benachrichtigungen über WebSockets an verbundene Clients.
+
+### Status Dashboard API
+Stellt API-Endpunkte bereit, um Build-Informationen abzurufen. Verwendet Redis zur Speicherung und zum Abruf von Build-Informationen.
+
+### Status Dashboard UI
+Bietet eine Benutzeroberfläche zur Überwachung von Builds und zum Anzeigen von Build-Logs und -Artefakten.
+
+## Erste Schritte
+
+### Voraussetzungen
+
+- Docker und Docker Compose
 - Git
 
-### Setup and Run
+### Einrichtung und Ausführung
 
-1. Clone the repository:
+1. Repository klonen:
 ```bash
 git clone https://github.com/fx64b/gobuild.git
 cd gobuild
 ./build.sh
 ```
 
-Redpanda (For debugging kafka messages):
+Redpanda (Für das Debugging von Kafka-Nachrichten):
 ```bash
- docker run --network=host -e KAFKA_BROKERS=localhost:9092 -e SERVER_PORT=8089 docker.redpanda.com/redpandadata/console:latest
+docker run --network=host -e KAFKA_BROKERS=localhost:9092 -e SERVER_PORT=8089 docker.redpanda.com/redpandadata/console:latest
 ```
 
-Then visit: [Redpanda Console](http://[::1]:8080/overview)
+Dann besuchen Sie: [Redpanda Console](http://[::1]:8080/overview)
