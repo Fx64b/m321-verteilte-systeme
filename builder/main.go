@@ -570,7 +570,6 @@ func main() {
 				return err
 			}
 
-			log.Printf("🔨 Processing build request: %s", buildReq.ID)
 			return builder.ProcessBuildJob(buildReq)
 		})
 	}()

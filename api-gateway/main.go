@@ -237,7 +237,6 @@ func main() {
 		}
 
 		buildID := uuid.New().String()
-		log.Printf("🆔 Generated build ID: %s", buildID)
 
 		buildMsg := message.BuildRequestMessage{
 			ID:            buildID,
@@ -247,7 +246,7 @@ func main() {
 			UserID:        userClaims.ID,
 			CreatedAt:     time.Now(),
 		}
-		log.Printf("📤 Sending message to Kafka: %+v", buildMsg)
+		log.Printf("📤 Sending build request message to Kafka for: %+v", buildMsg.RepositoryURL)
 
 		err := kafkaProducer.SendMessage("build-requests", buildID, buildMsg)
 		if err != nil {
