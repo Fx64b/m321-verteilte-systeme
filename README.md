@@ -64,3 +64,10 @@ docker run --network=host -e KAFKA_BROKERS=localhost:9092 -e SERVER_PORT=8089 do
 ```
 
 Dann besuchen Sie: [Redpanda Console](http://[::1]:8080/overview)
+
+
+<br>
+
+## Throughput testen
+
+Um den Throughput zu testen kann man unter [http://localhost:3000/throughput](http://localhost:3000/throughput) Urls angeben, welche dann gleichzeitig ausgeführt werden.
